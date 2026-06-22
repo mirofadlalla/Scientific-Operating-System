@@ -1,3 +1,32 @@
+---
+title: Scientific Operating System
+emoji: 🧬
+colorFrom: teal
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
+# AI Scientific OS - Multi-Agent Drug Discovery Hub
+
+This is an advanced Multi-Agent Scientific Operating System specializing in automated virtual drug screening, ADMET property prediction, and deep biomedical mechanism analysis.
+
+## 🚀 Deployment Architecture
+- **Backend Core**: FastAPI (Asynchronous Uvicorn Router)
+- **Streaming Pipeline**: Native AsyncOpenAI chunk streaming token delivery
+- **Expert Networks**: Integrated Chemical Agent & Medical Agent (OpenBioLLM)
+- **Containerization**: Optimized Docker container running on exposed port 7860
+
+## 🛠️ Environment Variables Configuration
+Ensure the following Secrets are set within your Hugging Face Space settings console:
+- `GROQ_API_KEY`
+- `GROQ_BASE_URL`
+- `ORCHESTRATOR_MODEL`
+- `ADMET_AI_URL`
+- `DRUG_REPURPOSING_URL`
+- `CHEMICAL_AI_URL`
+
 # 🧠 SciOS: AI Scientific Operating System
 ### Drug Discovery + Medical RAG + Contextual Multi-Agent System
 
