@@ -78,23 +78,24 @@ async def process_user_input(query: UserQuery):
         intent = routing_output.get("intent", "unknown")
         entities = routing_output.get("entities", {})
 
-        # Dual Routing Pipeline
+        # ==================== Start of Dual Routing Pipeline ====================
         chemical_output = ""
         medical_output = ""
 
-        # Trigger Chemical Agent if the intent is chemical/screening related, or if it is the target agent
+        # A. Trigger Chemical Agent if the intent is chemical/screening related, or if it is the target agent
         if "chemical" in intent or "screen" in intent or target_agent == "CHEMICAL_AGENT":
             chemical_output = await chemical_agent.run(intent, entities)
 
-        # Trigger Medical Agent (OpenBioLLM) if a disease entity is extracted
+        # B. Trigger Medical Agent (OpenBioLLM) if a disease entity is extracted to add biological context
         if entities.get("disease"):
             medical_output = await medical_agent.run(intent, entities)
 
-        # 2. Consolidate outputs from both agents into a single unified context
+        # C. Consolidate outputs from both agents into a single unified context
         if chemical_output or medical_output:
             agent_raw_output = f"[Chemical Engine Results]:\n{chemical_output}\n\n[Biomedical Reasoning Results]:\n{medical_output}"
         else:
             agent_raw_output = "[App Agent] مرحباً بك، كيف يمكنني مساعدتك في واجهة التطبيق؟"
+        # ==================== End of Dual Routing Pipeline ====================
 
         # 3. Response Synthesis: Generate the final refined response based on the joint agents report
         synthesis_prompt = f"""
