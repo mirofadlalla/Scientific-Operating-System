@@ -1,8 +1,9 @@
-fastapi
-uvicorn
-httpx
-pydantic
-pydantic-settings
-openai
-pytest
-pytest-asyncio
+fastapi==0.104.1
+starlette==0.27.0
+uvicorn==0.24.0
+httpx==0.25.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+openai==1.6.1
+pytest==7.4.3
+pytest-asyncio==0.21.1
