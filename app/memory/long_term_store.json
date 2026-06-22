@@ -1,0 +1,18 @@
+[
+  {
+    "session_id": "discovery_session_abc123",
+    "text": "مرحباً (Marhaba), \n\nنحن هنا لمساعدتك (We're here to help you). هل هناك شيء محدد تود معرفته أو مناقشته؟ (Is there something specific you'd like to know or discuss?) يرجى إعلامنا بكل ما تحتاج إليه، وسنقدم لك كل الدعم والمعلومات اللازمة (Please let us know whatever you need, and we'll provide you with all the necessary support and information).\n\nإذا كنت تبحث عن مساعدة في شيء ما، فيمكننا تقديم الإرشاد والتفاصيل حول مجموعة واسعة من المواضيع (If you're looking for help with something, we can offer guidance and details on a wide range of topics). فقط أخبرنا بما تحتاج إليه، وسنكون سعداء لمساعدتك (Just let us know what you need, and we'll be happy to assist you).\n\nهل هناك سؤال معين تود طرحه، أو موضع تود مناقشته؟ (Is there a specific question you'd like to ask, or a topic you'd like to discuss?) نحن هنا لتقديم المساعدة والدعم في كل ما تحتاج إليه (We're here to provide help and support in whatever you need).\n\nيرجى الإشارة إلى أي شيء تود مناقشته أو سؤاله، وسنقدم لك استجابة شاملة ومتخصصة (Please indicate anything you'd like to discuss or ask, and we'll provide you with a comprehensive and expert response).",
+    "metadata": {
+      "intent": "APP_HELP",
+      "agent": "APP_AGENT"
+    }
+  },
+  {
+    "session_id": "discovery_session_abc123",
+    "text": "بالتأكيد، سأقدم لك إجابة شاملة ومفصلة حول السؤال الذي طرحه.\n\nالرمز \"CCO\" يُشير إلى مركب كيميائي، وربما تكون تسأل عن ماهية هذا المركب. ومع ذلك، يبدو أن البيانات المعروضة لا توفر معلومات كافية حول المركب المحدد. \n\nالبيانات المعروضة تشير إلى وجود خطأ في إدخال السلسلة SMILES (سلسلة تعريف الهياكل الجزيئية البسيطة) التي تستخدم لتمثيل الهياكل الجزيئية بطريقة نصية. بدون سلسلة SMILES صالحة، لا يمكن تنفيذ استفسارات البحث عن التشابه.\n\nإذا كنت تبحث عن معلومات حول مركب كيميائي محدد، يُفضل تقديم سلسلة SMILES صالحة أو اسم المركب لتحصل على معلومات دقيقة. سأكون سعيدًا بمساعدتك إذا كنت بحاجة إلى مزيد من المعلومات أو إذا كان لديك سؤال آخر.",
+    "metadata": {
+      "intent": "ADMET_ANALYSIS",
+      "agent": "CHEMICAL_AGENT"
+    }
+  }
+]

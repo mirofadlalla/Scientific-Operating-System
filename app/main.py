@@ -13,6 +13,9 @@ import os
 from app.config import settings
 from app.agents.chemical.agent import ChemicalAgent
 from app.agents.medical.agent import MedicalAgent
+from app.orchestrator.brain import OrchestratorBrain
+from app.memory.short_term import ShortTermMemory
+from app.memory.long_term import LongTermMemory
 
 app = FastAPI(title="AI Scientific OS - Core Router")
 
@@ -21,10 +24,15 @@ client = AsyncOpenAI(
     api_key=settings.GROQ_API_KEY
 )
 
-# Initialize expert agents as singletons
+# Initialize expert agents and infrastructure singletons
 chemical_agent = ChemicalAgent()
 medical_agent = MedicalAgent()
 
+# Orchestrator + Memory
+orchestrator = OrchestratorBrain()
+short_memory = ShortTermMemory()
+long_memory = LongTermMemory()
+# Compatibility mapping expected by existing tests and callers
 SESSION_MEMORY: Dict[str, List[Dict[str, str]]] = {}
 
 class UserQuery(BaseModel):
@@ -58,35 +66,52 @@ You MUST respond ONLY with a raw JSON object containing exactly these fields:
 
 @app.post("/orchestrate")
 async def process_user_input(query: UserQuery):
-    # Wipe corrupted memory states if any server crash loops happen
-    if query.session_id not in SESSION_MEMORY:
-        SESSION_MEMORY[query.session_id] = []
+    # If tests or other code populated the compatibility SESSION_MEMORY,
+    # sync it into the short-term memory store so the orchestrator sees it.
+    if query.session_id in SESSION_MEMORY:
+        for m in SESSION_MEMORY.get(query.session_id, [])[:]:
+            try:
+                short_memory.add_message(query.session_id, m.get("role", "user"), m.get("content", ""))
+            except Exception:
+                pass
 
-    chat_history = SESSION_MEMORY[query.session_id]
+    # Retrieve recent short-term history and consult the orchestrator
+    chat_history = short_memory.get_history(query.session_id, limit=6)
     messages = [{"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT}]
-
-    # Build reliable context history
-    for msg in chat_history[-6:]:
+    for msg in chat_history:
         messages.append(msg)
-
     messages.append({"role": "user", "content": query.text_input})
 
     try:
-        # 1. Orchestrator inference layer
-        response = await client.chat.completions.create(
-            model=settings.ORCHESTRATOR_MODEL,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.0 
-        )
-
-        raw_content = response.choices[0].message.content
-        print(f"[DEBUG] Orchestrator Raw JSON: {raw_content}") # Print to terminal for visibility
-        
-        routing_output = json.loads(raw_content)
-        target_agent = routing_output.get("target_agent", "APP_AGENT")
-        intent = routing_output.get("intent", "UNKNOWN")
-        entities = routing_output.get("entities", {})
+        # 1. Orchestrator inference layer - prefer main client (mocked in tests),
+        # fallback to the internal OrchestratorBrain when the async client fails.
+        try:
+            response = await client.chat.completions.create(
+                model=settings.ORCHESTRATOR_MODEL,
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.0
+            )
+            raw_content = response.choices[0].message.content
+            print(f"[DEBUG] Orchestrator Raw JSON: {raw_content}")
+            routing_output = json.loads(raw_content)
+            target_agent = routing_output.get("target_agent", "APP_AGENT")
+            intent = routing_output.get("intent", "UNKNOWN")
+            entities = routing_output.get("entities", {})
+        except Exception:
+            # Fallback to local orchestrator classifier (sync)
+            classification = orchestrator.classify_intent(query.text_input)
+            intent_raw = (classification.get("intent") or "").lower()
+            entities = classification.get("entities") or {}
+            if intent_raw == "chemical":
+                target_agent = "CHEMICAL_AGENT"
+                intent = "CHEMICAL_SIMILARITY"
+            elif intent_raw == "medical":
+                target_agent = "MEDICAL_AGENT"
+                intent = "BIOMEDICAL_MECHANISM"
+            else:
+                target_agent = "APP_AGENT"
+                intent = "APP_HELP"
 
         # 2. Parallel agent execution logic
         tasks = []
@@ -157,9 +182,13 @@ async def process_user_input(query: UserQuery):
                         full_reply += token
                         yield token
                 
-                # Update chat history state only after a flawless full-stream cycle completion
-                chat_history.append({"role": "user", "content": query.text_input})
-                chat_history.append({"role": "assistant", "content": full_reply})
+                # Persist to short-term and long-term memory only after a successful generation
+                short_memory.add_message(query.session_id, "user", query.text_input)
+                short_memory.add_message(query.session_id, "assistant", full_reply)
+                # Keep compatibility dict in sync for external tests/code
+                SESSION_MEMORY.setdefault(query.session_id, []).append({"role": "user", "content": query.text_input})
+                SESSION_MEMORY.setdefault(query.session_id, []).append({"role": "assistant", "content": full_reply})
+                long_memory.add_entry(query.session_id, full_reply, metadata={"intent": intent, "agent": target_agent})
 
             except Exception as inner_stream_error:
                 print(f"[STREAM CRASH]: {str(inner_stream_error)}")
@@ -169,8 +198,11 @@ async def process_user_input(query: UserQuery):
 
     except Exception as e:
         # Clear out current session history on hard crashes to avoid poison-pill loops
-        if query.session_id in SESSION_MEMORY:
+        try:
+            short_memory.clear(query.session_id)
             SESSION_MEMORY[query.session_id] = []
+        except Exception:
+            pass
         print(f"[CORE KERNEL CRASH]: {str(e)}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"OS Kernel Error Trace: {str(e)}")

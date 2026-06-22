@@ -8,21 +8,28 @@ logger = logging.getLogger(__name__)
 
 class OrchestratorBrain:
     def __init__(self):
-        # We configure a client that points to Qwen endpoint or fallback OpenAI
-        self.client = OpenAI(
-            base_url=settings.QWEN_API_BASE,
-            api_key=settings.QWEN_API_KEY
-        )
-        self.model = "qwen3-32b" # Or equivalent configured Qwen/model name
+        # Configure a client that points to Qwen endpoint when available.
+        # Use getattr to avoid AttributeError when settings are not defined.
+        self.model = getattr(settings, "QWEN_MODEL", "qwen3-32b")
+        qwen_base = getattr(settings, "QWEN_API_BASE", None)
+        qwen_key = getattr(settings, "QWEN_API_KEY", None)
+        self.client = None
+        if qwen_base and qwen_key and qwen_key != "placeholder_key":
+            try:
+                self.client = OpenAI(base_url=qwen_base, api_key=qwen_key)
+            except Exception as e:
+                logger.warning(f"Failed to initialize QWen client: {e}")
+                self.client = None
+        else:
+            logger.warning("QWEN API settings not configured; using local fallback classifier.")
 
     def classify_intent(self, query: str) -> dict:
         """
         Classifies user query into chemical, medical, or app_agent intent using the LLM.
         """
         try:
-            # Check if API keys are set, otherwise return fallback
-            if settings.QWEN_API_KEY == "placeholder_key" or not settings.QWEN_API_KEY:
-                logger.warning("QWEN_API_KEY is not set. Returning fallback intent classification.")
+            # If client is not configured, fall back to local keyword classifier
+            if not self.client:
                 return self._fallback_classify(query)
 
             response = self.client.chat.completions.create(
@@ -34,7 +41,7 @@ class OrchestratorBrain:
                 response_format={"type": "json_object"},
                 temperature=0.0
             )
-            
+
             result_text = response.choices[0].message.content
             return json.loads(result_text)
         except Exception as e:
