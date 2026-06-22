@@ -101,7 +101,7 @@ class TestOrchestrateEndpoint:
             mock_synthesis_response = AsyncMock()
             mock_synthesis_response.__aiter__ = MagicMock(
                 return_value=[
-                    MagicMock(choices=[MagicMock(delta=MagicMock(content="Similar compounds found:"))]
+                    MagicMock(choices=[MagicMock(delta=MagicMock(content="Similar compounds found:"))])
                 ]
             )
             
