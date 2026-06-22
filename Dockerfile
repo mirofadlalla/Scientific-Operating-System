@@ -29,4 +29,5 @@ COPY . .
 EXPOSE 7860
 
 # Run the FastAPI core app using Uvicorn on host 0.0.0.0 and port 7860
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7860"]
+# Using app:app to execute the root-level app.py entry point
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]

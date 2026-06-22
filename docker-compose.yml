@@ -4,7 +4,7 @@ services:
   scientific-os:
     build:
       context: .
-      dockerfile: app/Dockerfile
+      dockerfile: Dockerfile
     container_name: scientific-os-app
     ports:
       - "7860:7860"  # Main application port

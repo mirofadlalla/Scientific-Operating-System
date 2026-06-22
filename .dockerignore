@@ -1,39 +1,16 @@
-# Git files
+# Ignore local virtual environments
+.venv/
+venv/
+env/
+
+# Ignore Python cache and compiled files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Ignore local environment variables and git configurations
+.env
 .git
 .gitignore
-.gitattributes
-
-# Python cache and environments
-__pycache__
-*.pyc
-*.pyo
-*.egg-info
-.venv
-venv
-env
-*.egg
-
-# IDE and editor files
-.vscode
-.idea
-*.code-workspace
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Testing and temporary files
-.pytest_cache
-.coverage
-htmlcov
-dist
-build
-*.tmp
-
-# GitHub Actions
-.github
-
-# Development files
-.env.example
-docker-compose.yml
 README.md
