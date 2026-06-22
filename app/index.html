@@ -32,15 +32,26 @@
     </main>
 
     <footer class="bg-gray-800 border-t border-gray-700 p-4 shadow-lg">
-        <form id="query-form" class="max-w-4xl mx-auto flex space-x-3">
+        <form id="query-form" class="max-w-4xl mx-auto flex space-x-3 items-center">
+            <button 
+                type="button"
+                id="voice-btn"
+                class="bg-gray-700 hover:bg-gray-600 text-gray-300 p-3 rounded-xl transition-colors shadow-md flex items-center justify-center border border-gray-600 relative group"
+                title="Speak to dictate text"
+            >
+                <span id="mic-icon" class="text-lg">🎙️</span>
+                <span id="mic-pulse" class="absolute inset-0 rounded-xl bg-red-500/30 animate-ping hidden"></span>
+            </button>
+
             <input 
                 type="text" 
                 id="user-input" 
-                placeholder="Ask about virtual screening, drug repurposing, or ADMET properties..." 
-                class="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-teal-500 text-gray-100 placeholder-gray-500 transition-colors"
+                placeholder="Ask or click mic to speak (e.g., virtual screening, ADMET properties)..." 
+                class="flex-1 bg-gray-900 border border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-teal-500 text-gray-100 placeholder-gray-500 transition-colors"
                 required
                 autocomplete="off"
             >
+            
             <button 
                 type="submit" 
                 id="send-btn"
@@ -57,6 +68,9 @@
         const queryForm = document.getElementById('query-form');
         const userInput = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
+        const voiceBtn = document.getElementById('voice-btn');
+        const micIcon = document.getElementById('mic-icon');
+        const micPulse = document.getElementById('mic-pulse');
 
         // Static session identifiers for simplicity
         const sessionId = "discovery_session_abc123";
@@ -73,15 +87,77 @@
             "🤖 Response Synthesizer: Melting pipeline insights into a cohesive Arabic summary..."
         ];
 
+        // --- Native Voice Recognition (Web Speech API) Setup ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition = null;
+        let isRecording = false;
+
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = false; // Stop automatically when user finishes the sentence
+            recognition.interimResults = false; // Only deliver final concrete transcription block
+            recognition.lang = 'ar-EG'; // Set speech recognition language targeting Arabic (Egypt/Universal)
+
+            // Fired when the browser successfully binds and receives mic sound inputs
+            recognition.onstart = () => {
+                isRecording = true;
+                micIcon.innerText = "🛑"; // Change mic icon to stop indicator
+                voiceBtn.classList.remove('bg-gray-700', 'hover:bg-gray-600', 'text-gray-300');
+                voiceBtn.classList.add('bg-red-600', 'hover:bg-red-700', 'text-white', 'border-red-500');
+                micPulse.classList.remove('hidden'); // Show pulsing red border glow
+                userInput.placeholder = "Listening professor... Speak clearly now.";
+            };
+
+            // Fired when mic pipeline captures and transcribes a clean sentence chunk
+            recognition.onresult = (event) => {
+                const speechToTextResult = event.results[0][0].transcript;
+                userInput.value = speechToTextResult; // Safely inject text block into the chat input field
+            };
+
+            // Error boundary safe mapping for speech processing exceptions
+            recognition.onerror = (event) => {
+                console.error("[Voice Core Error]: ", event.error);
+            };
+
+            // Reset UI states back to laboratory template parameters when voice sessions terminate
+            recognition.onend = () => {
+                isRecording = false;
+                micIcon.innerText = "🎙️";
+                voiceBtn.classList.remove('bg-red-600', 'hover:bg-red-700', 'text-white', 'border-red-500');
+                voiceBtn.classList.add('bg-gray-700', 'hover:bg-gray-600', 'text-gray-300');
+                micPulse.classList.add('hidden');
+                userInput.placeholder = "Ask or click mic to speak (e.g., virtual screening, ADMET properties)...";
+            };
+
+            // Bind click event handler to control recording state toggles
+            voiceBtn.addEventListener('click', () => {
+                if (isRecording) {
+                    recognition.stop();
+                } else {
+                    recognition.start();
+                }
+            });
+        } else {
+            // Gracefully disable voice features if browser doesn't natively support Web Speech API
+            voiceBtn.disabled = true;
+            voiceBtn.title = "Voice recognition not supported on this browser version.";
+            micIcon.innerText = "❌";
+        }
+
+        // --- Core Chat Submission Pipeline ---
         queryForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const text = userInput.value.trim();
             if (!text) return;
 
+            // Make sure to kill voice recording sessions if user clicks analyze midway
+            if (isRecording && recognition) recognition.stop();
+
             // Disable UI inputs during live data stream
             userInput.value = '';
             userInput.disabled = true;
             sendBtn.disabled = true;
+            voiceBtn.disabled = true;
 
             // Append User Message bubble to DOM
             appendMessage('User', text, 'bg-teal-900/40 border border-teal-700/50 ml-auto max-w-2xl text-right');
@@ -158,6 +234,7 @@
                 // Re-enable UI inputs once generation pipeline terminates
                 userInput.disabled = false;
                 sendBtn.disabled = false;
+                if (SpeechRecognition) voiceBtn.disabled = false;
                 userInput.focus();
             }
         });
