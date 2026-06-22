@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  scientific-os:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: scientific-os-app
+    ports:
+      - "7860:7860"  # Main application port
+      - "8000:8000"  # Alternative Uvicorn port if needed
+    environment:
+      # Groq LLM Configuration
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+      
+      # External Microservices
+      ADMET_AI_URL: ${ADMET_AI_URL:-https://shdwRow-ailixir-admet.hf.space}
+      CHEMICAL_AI_URL: ${CHEMICAL_AI_URL:-https://RottenShadow-ailixir-chemical-rag.hf.space}
+      DRUG_REPURPOSING_URL: ${DRUG_REPURPOSING_URL:-https://RottenShadow-ailixir-drug-repurposing.hf.space}
+      GENERATION_SERVICE_URL: ${GENERATION_SERVICE_URL:-https://shdwRow-ailixir-generation.hf.space}
+      
+      # Python Runtime Configuration
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    
+    volumes:
+      # Optional: Mount source code for development mode
+      # - .:/code
+    
+    networks:
+      - scientific-os-network
+    
+    # Health check to verify the service is running
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Restart policy
+    restart: unless-stopped
+
+networks:
+  scientific-os-network:
+    driver: bridge

@@ -1,0 +1,16 @@
+# Ignore local virtual environments
+.venv/
+venv/
+env/
+
+# Ignore Python cache and compiled files
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Ignore local environment variables and git configurations
+.env
+.git
+.gitignore
+README.md

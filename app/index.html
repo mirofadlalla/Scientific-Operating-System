@@ -62,6 +62,17 @@
         const sessionId = "discovery_session_abc123";
         const userId = "researcher_main";
 
+        // Predefined agent execution sequences to entertain and inform the user during raw API waits
+        const dynamicThoughts = [
+            "🧠 Orchestrator: Classifying intent and parsing molecular structures...",
+            "🔬 Booting up expert discovery network pipelines...",
+            "⚡ Dispatching concurrent sub-tasks via Asyncio Kernel...",
+            "🧪 Chemical Engine: Accessing Hugging Face Spaces for deep screening computation...",
+            "🧬 Biomedical Engine: Querying OpenBioLLM for target interactions and pathways...",
+            "📊 Data Aggregator: Trimming payload weights and clearing token metadata...",
+            "🤖 Response Synthesizer: Melting pipeline insights into a cohesive Arabic summary..."
+        ];
+
         queryForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const text = userInput.value.trim();
@@ -75,8 +86,28 @@
             // Append User Message bubble to DOM
             appendMessage('User', text, 'bg-teal-900/40 border border-teal-700/50 ml-auto max-w-2xl text-right');
 
-            // Append a blank Assistant bubble to dynamically inject tokens into
-            const assistantBubble = appendMessage('OS', '', 'bg-gray-800 border border-gray-700 max-w-2xl');
+            // Inject the Thinking/Status Box dynamically into the DOM
+            const thoughtBox = document.createElement('div');
+            thoughtBox.className = "bg-gray-950 border border-dashed border-teal-800/60 p-4 rounded-xl max-w-xl text-xs font-mono text-teal-400 space-y-1.5 animate-pulse shadow-inner";
+            thoughtBox.innerHTML = `<div class="font-bold text-gray-400 uppercase tracking-wider mb-1">⚙️ Kernel Processing:</div>`;
+            chatContainer.appendChild(thoughtBox);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+
+            // Start a live ticker interval to rotate agent thoughts while awaiting the HTTP response
+            let thoughtIdx = 0;
+            const updateThought = () => {
+                if (thoughtIdx < dynamicThoughts.length) {
+                    const line = document.createElement('div');
+                    line.innerText = dynamicThoughts[thoughtIdx];
+                    thoughtBox.appendChild(line);
+                    thoughtIdx++;
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+            };
+            
+            // Initial fires and setting up the interval step loops
+            updateThought(); 
+            const thoughtInterval = setInterval(updateThought, 900);
 
             try {
                 // Issue fetch request to the backend orchestrator endpoint
@@ -90,9 +121,16 @@
                     })
                 });
 
+                // Terminate the background thinking loop once the backend begins streaming data
+                clearInterval(thoughtInterval);
+                thoughtBox.remove(); 
+
                 if (!response.ok) {
                     throw new Error(`HTTP Error Status: ${response.status}`);
                 }
+
+                // Append a blank Assistant bubble to dynamically inject tokens into
+                const assistantBubble = appendMessage('OS', '', 'bg-gray-800 border border-gray-700 max-w-2xl');
 
                 // Initialize the stream reader loop
                 const reader = response.body.getReader();
@@ -111,8 +149,11 @@
                 }
 
             } catch (error) {
-                // Error boundary rendering inside assistant output bubble
-                assistantBubble.innerHTML = `<span class="text-red-400 font-mono">[Streaming Exception Error]: ${error.message}</span>`;
+                clearInterval(thoughtInterval);
+                if(thoughtBox) thoughtBox.remove();
+                
+                const errorBubble = appendMessage('OS', '', 'bg-gray-800 border border-gray-700 max-w-2xl');
+                errorBubble.innerHTML = `<span class="text-red-400 font-mono">[Streaming Exception Error]: ${error.message}</span>`;
             } finally {
                 // Re-enable UI inputs once generation pipeline terminates
                 userInput.disabled = false;
