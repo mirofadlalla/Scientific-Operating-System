@@ -472,6 +472,8 @@ let silenceProgress  = 0;
 let isCalibrating    = false;
 let calibrationData  = [];
 let calibratedThreshold = 15; // self-calibrates based on ambient noise
+let volumeHistory    = [];    // rolling average window
+const HISTORY_SIZE   = 12;    // ~200ms smoothing (12 frames * 16.6ms)
 
 // AI streaming state
 let currentAIBubble = null;
@@ -618,6 +620,7 @@ ttsBtn.addEventListener('click', () => {
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 function connectWS() {
+    unlockTTS();
     if (wsConnected) { disconnectWS(); return; }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url   = `${proto}://${location.host}/ws/voice?session_id=${SESSION_ID}`;
@@ -647,6 +650,7 @@ wsBtn.addEventListener('click', connectWS);
 
 // ─── Live Voice Session ───────────────────────────────────────────────────────
 micBtn.addEventListener('click', () => {
+    unlockTTS();
     if (!wsConnected) {
         sysMsg('Connect WebSocket first (click the 🌐 button).', 'error');
         return;
@@ -688,17 +692,35 @@ async function startListening() {
     speechStartTime = null;
     clearSilenceTimer();
     silenceBarWrap.classList.remove('visible');
+    volumeHistory = []; // Reset VAD rolling buffer
 
     try {
-        micStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+        // Request mic with echo cancellation, noise suppression, and automatic gain control
+        micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            },
+            video: false
+        });
     } catch(e) {
-        sysMsg('Microphone access denied: ' + e.message, 'error');
-        endLiveSession(); return;
+        // Fallback for older browsers or strict system permissions
+        try {
+            micStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+        } catch(err) {
+            sysMsg('Microphone access denied: ' + err.message, 'error');
+            endLiveSession(); return;
+        }
     }
 
     const mimeTypes = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'];
     const mimeType  = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || '';
-    mediaRecorder = new MediaRecorder(micStream, mimeType ? {mimeType} : {});
+    // Record at 128kbps for high fidelity transcription (improves Whisper accuracy)
+    mediaRecorder = new MediaRecorder(micStream, {
+        mimeType: mimeType,
+        audioBitsPerSecond: 128000
+    });
     mediaRecorder.ondataavailable = e => { if(e.data.size>0) audioChunks.push(e.data); };
     mediaRecorder.onstop = () => {};
     mediaRecorder.start(100);
@@ -712,6 +734,30 @@ async function startListening() {
 
     const dataArr = new Uint8Array(analyser.frequencyBinCount);
 
+    // VAD Self-Calibration Phase (800ms for accurate noise profile)
+    isCalibrating = true;
+    calibrationData = [];
+    setLiveStatus('Calibrating room noise...');
+    liveTranscript.textContent = 'Calibrating...';
+    liveTranscript.className = 'dim';
+
+    setTimeout(() => {
+        isCalibrating = false;
+        if (calibrationData.length > 0) {
+            const maxNoise = Math.max(...calibrationData);
+            const avgNoise = calibrationData.reduce((s, v) => s + v, 0) / calibrationData.length;
+            // Cap threshold at 38, minimum 14, margin of max(maxNoise + 6, avgNoise + 10)
+            calibratedThreshold = Math.min(38, Math.max(14, Math.max(maxNoise + 6, avgNoise + 10)));
+            console.log("[VAD] Calibration complete. Max noise:", maxNoise.toFixed(1), "Avg noise:", avgNoise.toFixed(1), "-> Speech threshold:", calibratedThreshold.toFixed(1));
+        } else {
+            calibratedThreshold = SPEECH_THRESHOLD;
+        }
+        if (liveActive) {
+            setLiveStatus('Speak now — auto-detects Arabic & English');
+            liveTranscript.textContent = 'Listening...';
+        }
+    }, 800);
+
     function vadLoop() {
         if (!liveActive) return;
         animFrame = requestAnimationFrame(vadLoop);
@@ -724,9 +770,24 @@ async function startListening() {
         waveSpans.forEach((span, i) => {
             span.style.height = Math.max(3, dataArr[i*2] / 5) + 'px';
         });
-        liveWaveform.classList.toggle('speaking', avg > SPEECH_THRESHOLD);
 
-        if (avg > SPEECH_THRESHOLD) {
+        if (isCalibrating) {
+            calibrationData.push(avg);
+            liveWaveform.classList.toggle('speaking', avg > calibratedThreshold);
+            return;
+        }
+
+        // Rolling history window to smooth out instantaneous noise clicks
+        volumeHistory.push(avg);
+        if (volumeHistory.length > HISTORY_SIZE) {
+            volumeHistory.shift();
+        }
+
+        const rollingAvg = volumeHistory.reduce((s, v) => s + v, 0) / volumeHistory.length;
+
+        liveWaveform.classList.toggle('speaking', rollingAvg > calibratedThreshold);
+
+        if (rollingAvg > calibratedThreshold) {
             // ── Speech detected ──
             if (!isSpeaking) {
                 isSpeaking       = true;
@@ -753,8 +814,6 @@ async function startListening() {
         }
     }
     vadLoop();
-
-    setLiveStatus('Speak now — Arabic or English');
 }
 
 function stopListening() {

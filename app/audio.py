@@ -64,7 +64,7 @@ class AudioProcessor:
                 model=settings.GROQ_WHISPER_MODEL,
                 file=audio_stream,
                 response_format="text",
-                # No language= parameter → Whisper auto-detects Arabic, English, etc.
+                prompt="Scientific query in English or Arabic (العربية). Chemistry, biology, compound, SMILES, medicine, research.",
             )
 
             # Groq returns plain text when response_format="text"

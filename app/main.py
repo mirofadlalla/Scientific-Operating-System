@@ -133,11 +133,85 @@ You MUST respond ONLY with a raw JSON object containing exactly these fields:
 """
 
 
+async def classify_domain(text_input: str) -> bool:
+    """
+    Classifies whether the user query is within the domain of the AI Scientific OS.
+    Domain includes: Drug Discovery, Chemistry, Biology, Bioinformatics, Cheminformatics,
+    Biochemistry, Pharmacology, diseases, target proteins, SMILES, ADMET, and standard app support/greetings.
+    General medical queries (like diagnosing a headache, clinical prescriptions), law,
+    history, general coding, math, general science, etc. are OUT of domain.
+    """
+    prompt = f"""
+    You are the safety and domain classifier for a Scientific Operating System specializing in Drug Discovery.
+    Determine if the following user query is WITHIN the domain or OUT of domain.
+
+    Within-Domain topics:
+    - Drug Discovery & Repurposing
+    - Chemistry, molecules, compounds, SMILES, ADMET, chemical properties
+    - Biology, bioinformatics, proteins, genes, pathways, diseases, target receptors
+    - Scientific OS help, features, standard greetings (e.g. hello, hi, how are you, thanks, bye)
+
+    Out-of-Domain topics:
+    - General medicine, symptom self-diagnosis, clinical prescriptions, treatment advice, surgery (e.g., "what should I take for headache", "how to cure cancer in humans")
+    - Law, legal advice, lawyers, court cases
+    - General coding, software engineering (unless related to this app)
+    - History, geography, politics, sports, entertainment, general math, general science, cooking, etc.
+
+    User query: "{text_input}"
+
+    Respond ONLY with "IN" if it is within-domain, or "OUT" if it is out-of-domain. Do not add any explanation.
+    """
+    try:
+        response = await client.chat.completions.create(
+            model=settings.ORCHESTRATOR_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=5
+        )
+        verdict = response.choices[0].message.content.strip().upper()
+        return "OUT" not in verdict
+    except Exception:
+        # Fallback to true to avoid blocking on API errors
+        return True
+
+
 async def route_and_stream(text_input: str, session_id: str, user_id: str):
     """
     Shared orchestration logic: routes query through agents and yields
     text tokens from the synthesis stream.
     """
+    # Check domain limits
+    in_domain = await classify_domain(text_input)
+    if not in_domain:
+        is_ar = bool(re.search(r"[\u0600-\u06FF]", text_input))
+        if is_ar:
+            refusal = (
+                "عذراً، هذا السؤال خارج نطاق تخصصي العلمي. 🧪\n\n"
+                "أنا نظام تشغيل ذكاء اصطناعي علمي متخصص حصرياً في **اكتشاف الأدوية، التحليل الكيميائي، والآليات الطبية الحيوية**. "
+                "لا يمكنني الإجابة على الأسئلة المتعلقة بالقوانين، المحاماة، الطب السريري الشخصي، أو أي مجالات عامة أخرى.\n\n"
+                "**مجالات تخصصي تشمل:**\n"
+                "1. 🧬 **النواة الحيوية**: دراسة المسارات البيولوجية، آليات الأمراض، والبروتينات المستهدفة.\n"
+                "2. 🧪 **النواة الكيميائية**: البحث عن المركبات المتشابهة وتوقع الخصائص السمية والحيوية (SMILES & ADMET).\n"
+                "3. 🤖 **منسق المهام العلمي**: تشغيل خطوط الفحص الافتراضي وإعادة توجيه الأدوية."
+            )
+        else:
+            refusal = (
+                "I'm sorry, this query is outside my scientific domain. 🧪\n\n"
+                "I am an AI Scientific OS specializing strictly in **Drug Discovery, Chemical Analysis, and Biomedical Mechanisms**. "
+                "I cannot assist with topics like law, clinical medicine, general advice, or other unrelated fields.\n\n"
+                "**My core capabilities include:**\n"
+                "1. 🧬 **Bioinformatics Core**: Analyzing biological pathways, disease mechanisms, and target receptors.\n"
+                "2. 🧪 **Cheminformatics Core**: Searching chemical similarity, predicting ADMET properties, and molecular analysis.\n"
+                "3. 🤖 **Scientific Orchestration**: Running virtual screening pipelines for drug repurposing."
+            )
+        # Yield the tokens of the refusal response dynamically
+        for word in refusal.split(" "):
+            yield word + " "
+            await asyncio.sleep(0.02)
+        # Add to memory
+        short_memory.add_message(session_id, "user", text_input)
+        short_memory.add_message(session_id, "assistant", refusal)
+        return
     if should_skip_orchestrator(text_input):
         direct_prompt = f"""
         The user sent a casual message or greeting. Provide a warm, friendly response.
