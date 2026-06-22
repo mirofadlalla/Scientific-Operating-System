@@ -1,10 +1,11 @@
 import json
 import asyncio
 import traceback  # Contextual debugging
+import re
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from openai import AsyncOpenAI
 from fastapi.responses import HTMLResponse
 import os
@@ -40,6 +41,41 @@ class UserQuery(BaseModel):
     user_id: str
     text_input: str
 
+
+def is_general_greeting(text: str) -> bool:
+    """
+    Checks if the input is a general greeting or casual question that doesn't need agent routing.
+    Returns True if the message is just a greeting, casual chat, or general help request.
+    """
+    text_lower = text.strip().lower()
+    
+    # General greetings and casual questions (Arabic and English)
+    greeting_patterns = [
+        r"^(hello|hi|hey|greetings|السلام عليكم|أهلا|مرحبا|كيف حالك|شنو أخبارك|كيفك|كيفك أنت).*$",
+        r"^(what is|what's|who are|who is|حكي|شنو|ويش)",  # Vague questions
+        r"^(thanks|شكرا|اشكرك|thank you).*$",  # Gratitude
+        r"^(bye|goodbye|الوداع|باي|سلام|مع السلامة).*$",  # Goodbye
+    ]
+    
+    for pattern in greeting_patterns:
+        if re.match(pattern, text_lower):
+            return True
+    
+    # If message is very short (< 10 chars), likely just greeting
+    if len(text_lower.split()) <= 2 and not any(keyword in text_lower for keyword in 
+        ["compound", "drug", "disease", "molecule", "chemical", "smiles", "admet", 
+         "screening", "pathway", "protein", "target", "مركب", "دواء", "مرض"]):
+        return True
+    
+    return False
+
+
+def should_skip_orchestrator(text: str) -> bool:
+    """
+    Returns True if the message can be handled directly without agent routing.
+    """
+    return is_general_greeting(text)
+
 ORCHESTRATOR_SYSTEM_PROMPT = """
 You are the central brain (Orchestrator) of an AI Scientific OS specializing in Drug Discovery.
 Analyze the user's input, extract entities, and route the query to the correct expert agent using STRICT intents.
@@ -66,6 +102,58 @@ You MUST respond ONLY with a raw JSON object containing exactly these fields:
 
 @app.post("/orchestrate")
 async def process_user_input(query: UserQuery):
+    """
+    Main orchestration endpoint for processing user queries.
+    Handles both general questions (direct response) and scientific queries (agent routing).
+    """
+    
+    # ============================================================================
+    # STEP 0: Quick Check - Is this a general greeting/casual question?
+    # ============================================================================
+    if should_skip_orchestrator(query.text_input):
+        print(f"[DEBUG] Detected general greeting/casual message: skip orchestrator")
+        
+        async def direct_response_streamer():
+            """For casual greetings, provide a direct friendly response"""
+            try:
+                direct_prompt = f"""
+                The user sent a casual message or greeting. Provide a warm, friendly response.
+                User message: "{query.text_input}"
+                
+                Respond in the same language they used (Arabic or English) with a short, warm greeting.
+                Keep it brief and friendly.
+                """
+                
+                stream = await client.chat.completions.create(
+                    model=settings.ORCHESTRATOR_MODEL,
+                    messages=[{"role": "user", "content": direct_prompt}],
+                    temperature=0.7,  # More casual, less formal
+                    stream=True
+                )
+                
+                full_reply = ""
+                async for chunk in stream:
+                    token = chunk.choices[0].delta.content or ""
+                    if token:
+                        full_reply += token
+                        yield token
+                
+                # Store in memory
+                short_memory.add_message(query.session_id, "user", query.text_input)
+                short_memory.add_message(query.session_id, "assistant", full_reply)
+                SESSION_MEMORY.setdefault(query.session_id, []).append({"role": "user", "content": query.text_input})
+                SESSION_MEMORY.setdefault(query.session_id, []).append({"role": "assistant", "content": full_reply})
+                long_memory.add_entry(query.session_id, full_reply, metadata={"intent": "GREETING", "agent": "NONE"})
+                
+            except Exception as e:
+                print(f"[STREAM CRASH]: {str(e)}")
+                yield f"\n[Stream Error]: {str(e)}"
+        
+        return StreamingResponse(direct_response_streamer(), media_type="text/plain")
+    
+    # ============================================================================
+    # STEP 1: Normal Flow - Route to appropriate agent
+    # ============================================================================
     # If tests or other code populated the compatibility SESSION_MEMORY,
     # sync it into the short-term memory store so the orchestrator sees it.
     if query.session_id in SESSION_MEMORY:
