@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Scientific OS - Drug Discovery Hub</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans h-screen flex flex-col">
+
+    <header class="bg-gray-800 border-b border-gray-700 p-4 flex items-center justify-between shadow-md">
+        <div class="flex items-center space-x-3">
+            <div class="bg-teal-500 text-gray-900 p-2 rounded-lg font-bold text-xl">🧬</div>
+            <div>
+                <h1 class="text-lg font-bold text-teal-400 tracking-wide">AI Scientific OS</h1>
+                <p class="text-xs text-gray-400">Multi-Agent Drug Discovery & Biomedical Core</p>
+            </div>
+        </div>
+        <div class="flex items-center space-x-2 text-xs bg-gray-900 px-3 py-1.5 rounded-full border border-gray-700">
+            <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+            <span class="text-gray-300 font-mono">Session: active_research_01</span>
+        </div>
+    </header>
+
+    <main id="chat-container" class="flex-1 overflow-y-auto p-6 space-y-4 max-w-4xl mx-auto w-full">
+        <div class="flex items-start space-x-3 max-w-2xl">
+            <div class="bg-teal-600 text-white p-2 rounded-lg text-sm font-bold shadow">OS</div>
+            <div class="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-sm text-sm leading-relaxed">
+                Welcome Professor. The Chemical Discovery Engine (FAISS, ADMET) and Biomedical Reasoning Engine (OpenBioLLM) are online. Enter your inquiry regarding molecular structures, virtual screening, or therapeutic mechanisms.
+            </div>
+        </div>
+    </main>
+
+    <footer class="bg-gray-800 border-t border-gray-700 p-4 shadow-lg">
+        <form id="query-form" class="max-w-4xl mx-auto flex space-x-3">
+            <input 
+                type="text" 
+                id="user-input" 
+                placeholder="Ask about virtual screening, drug repurposing, or ADMET properties..." 
+                class="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-teal-500 text-gray-100 placeholder-gray-500 transition-colors"
+                required
+                autocomplete="off"
+            >
+            <button 
+                type="submit" 
+                id="send-btn"
+                class="bg-teal-500 hover:bg-teal-600 text-gray-900 font-medium px-6 py-3 rounded-xl text-sm transition-colors flex items-center space-x-2 shadow-md"
+            >
+                <span>Analyze</span>
+                <span>⚡</span>
+            </button>
+        </form>
+    </footer>
+
+    <script>
+        const chatContainer = document.getElementById('chat-container');
+        const queryForm = document.getElementById('query-form');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+
+        // Static session identifiers for simplicity
+        const sessionId = "discovery_session_abc123";
+        const userId = "researcher_main";
+
+        queryForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = userInput.value.trim();
+            if (!text) return;
+
+            // Disable UI inputs during live data stream
+            userInput.value = '';
+            userInput.disabled = true;
+            sendBtn.disabled = true;
+
+            // Append User Message bubble to DOM
+            appendMessage('User', text, 'bg-teal-900/40 border border-teal-700/50 ml-auto max-w-2xl text-right');
+
+            // Append a blank Assistant bubble to dynamically inject tokens into
+            const assistantBubble = appendMessage('OS', '', 'bg-gray-800 border border-gray-700 max-w-2xl');
+
+            try {
+                // Issue fetch request to the backend orchestrator endpoint
+                const response = await fetch('/orchestrate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        user_id: userId,
+                        text_input: text
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP Error Status: ${response.status}`);
+                }
+
+                // Initialize the stream reader loop
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    // Decode byte chunks to raw string tokens
+                    const token = decoder.decode(value, { stream: true });
+                    assistantBubble.innerText += token;
+
+                    // Automatically lock scroll to bottom during output generation
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }
+
+            } catch (error) {
+                // Error boundary rendering inside assistant output bubble
+                assistantBubble.innerHTML = `<span class="text-red-400 font-mono">[Streaming Exception Error]: ${error.message}</span>`;
+            } finally {
+                // Re-enable UI inputs once generation pipeline terminates
+                userInput.disabled = false;
+                sendBtn.disabled = false;
+                userInput.focus();
+            }
+        });
+
+        // Helper function to dynamically construct DOM message components
+        function appendMessage(sender, text, styles) {
+            const wrapper = document.createElement('div');
+            wrapper.className = `flex items-start space-x-3 ${sender === 'User' ? 'justify-end' : ''}`;
+
+            const icon = document.createElement('div');
+            icon.className = `${sender === 'User' ? 'bg-teal-700 order-2 ml-3' : 'bg-gray-700'} text-white p-2 rounded-lg text-xs font-bold shadow-sm`;
+            icon.innerText = sender === 'User' ? 'RX' : 'OS';
+
+            const bubble = document.createElement('div');
+            bubble.className = `${styles} p-4 rounded-xl shadow-sm text-sm leading-relaxed whitespace-pre-wrap`;
+            bubble.innerText = text;
+
+            wrapper.appendChild(icon);
+            wrapper.appendChild(bubble);
+            chatContainer.appendChild(wrapper);
+            
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            return bubble;
+        }
+    </script>
+</body>
+</html>

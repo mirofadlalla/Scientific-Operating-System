@@ -1,10 +1,13 @@
 import json
 import asyncio
+import traceback  # Contextual debugging
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
-from openai import OpenAI
+from openai import AsyncOpenAI
+from fastapi.responses import HTMLResponse
+import os
 
 # Import system configuration and custom agents
 from app.config import settings
@@ -13,7 +16,7 @@ from app.agents.medical.agent import MedicalAgent
 
 app = FastAPI(title="AI Scientific OS - Core Router")
 
-client = OpenAI(
+client = AsyncOpenAI(
     base_url=settings.GROQ_BASE_URL,
     api_key=settings.GROQ_API_KEY
 )
@@ -55,32 +58,37 @@ You MUST respond ONLY with a raw JSON object containing exactly these fields:
 
 @app.post("/orchestrate")
 async def process_user_input(query: UserQuery):
+    # Wipe corrupted memory states if any server crash loops happen
     if query.session_id not in SESSION_MEMORY:
         SESSION_MEMORY[query.session_id] = []
 
     chat_history = SESSION_MEMORY[query.session_id]
     messages = [{"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT}]
 
+    # Build reliable context history
     for msg in chat_history[-6:]:
         messages.append(msg)
 
     messages.append({"role": "user", "content": query.text_input})
 
     try:
-        # 1. Orchestrator classifies the intent, routes targets, and extracts entities via JSON object
-        response = client.chat.completions.create(
+        # 1. Orchestrator inference layer
+        response = await client.chat.completions.create(
             model=settings.ORCHESTRATOR_MODEL,
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0.0 
         )
 
-        routing_output = json.loads(response.choices[0].message.content)
+        raw_content = response.choices[0].message.content
+        print(f"[DEBUG] Orchestrator Raw JSON: {raw_content}") # Print to terminal for visibility
+        
+        routing_output = json.loads(raw_content)
         target_agent = routing_output.get("target_agent", "APP_AGENT")
         intent = routing_output.get("intent", "UNKNOWN")
         entities = routing_output.get("entities", {})
 
-        # 2. Execute targeted expert agents in parallel using asyncio tasks
+        # 2. Parallel agent execution logic
         tasks = []
         task_mapping = []
 
@@ -98,54 +106,79 @@ async def process_user_input(query: UserQuery):
         medical_output = ""
         
         if tasks:
+            print(f"[DEBUG] Dispatching {len(tasks)} parallel agent tasks...")
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            for idx, res in enumerate(results):
-                if not isinstance(res, Exception):
-                    if task_mapping[idx] == "CHEMICAL": 
-                        chemical_output = res
-                    else: 
-                        medical_output = res
-
-        # Assemble tightly payload-trimmed inputs to minimize context token usage
-        if chemical_output or medical_output:
-            agent_raw_output = f"[Chem]: {chemical_output}\n[Bio]: {medical_output}".strip()
-        else:
-            agent_raw_output = "[App]: Welcome to Scientific OS."
-
-        # 3. Streaming Engine Layer
-        # Generator function to stream tokens instantly and update chat state asynchronously
-        async def text_streamer():
-            synthesis_prompt = f"""
-            User: "{query.text_input}"
-            Data: "{agent_raw_output}"
-            Synthesize a concise, expert final response in the user's language (e.g., Arabic). Blend findings smoothly.
-            """
             
-            # Non-blocking async chunk streaming setup by executing synchronous SDK execution inside a thread pool
-            def get_openai_stream():
-                return client.chat.completions.create(
+            for idx, res in enumerate(results):
+                if isinstance(res, Exception):
+                    print(f"[AGENT CRASH] {task_mapping[idx]} Agent failed: {str(res)}")
+                    traceback.print_tb(res.__traceback__)
+                    # Catch the inner agent failure instead of killing the core OS kernel loop
+                    if task_mapping[idx] == "CHEMICAL":
+                        chemical_output = f"[Chemical Agent Exception Fail]: {str(res)}"
+                    else:
+                        medical_output = f"[Medical Agent Exception Fail]: {str(res)}"
+                else:
+                    if task_mapping[idx] == "CHEMICAL": 
+                        chemical_output = str(res)
+                    else: 
+                        medical_output = str(res)
+
+        # Build clean payloads for synthesis execution
+        if chemical_output or medical_output:
+            agent_raw_output = f"[Chem Data]: {chemical_output}\n[Bio Data]: {medical_output}".strip()
+        else:
+            agent_raw_output = "[App System Context]: Standard greeting or help request processed."
+
+        print(f"[DEBUG] Combined Agent Output Length: {len(agent_raw_output)} chars")
+
+        # 3. Secure Async Streaming Engine
+        async def text_streamer():
+            try:
+                synthesis_prompt = f"""
+                User Input Question: "{query.text_input}"
+                Retrieved Lab Data: "{agent_raw_output}"
+                
+                Synthesize an expert, polished response in the user's conversational language (e.g., Arabic). 
+                Provide a unified, highly professional explanation.
+                """
+                
+                stream = await client.chat.completions.create(
                     model=settings.ORCHESTRATOR_MODEL,
                     messages=[{"role": "user", "content": synthesis_prompt}],
                     temperature=0.3,
                     stream=True
                 )
-            
-            loop = asyncio.get_event_loop()
-            stream = await loop.run_in_executor(None, get_openai_stream)
-            
-            full_reply = ""
-            for chunk in stream:
-                token = chunk.choices[0].delta.content or ""
-                if token:
-                    full_reply += token
-                    yield token  # Push the generated token immediately to the client
-                    await asyncio.sleep(0.01)  # Yield execution back to the loop to support high concurrency streaming
+                
+                full_reply = ""
+                async for chunk in stream:
+                    token = chunk.choices[0].delta.content or ""
+                    if token:
+                        full_reply += token
+                        yield token
+                
+                # Update chat history state only after a flawless full-stream cycle completion
+                chat_history.append({"role": "user", "content": query.text_input})
+                chat_history.append({"role": "assistant", "content": full_reply})
 
-            # Append complete round-trip logs to the session history in background memory once the stream ends
-            chat_history.append({"role": "user", "content": query.text_input})
-            chat_history.append({"role": "assistant", "content": full_reply})
+            except Exception as inner_stream_error:
+                print(f"[STREAM CRASH]: {str(inner_stream_error)}")
+                yield f"\n[Stream Runtime Error]: Connection disrupted mid-generation: {str(inner_stream_error)}"
 
         return StreamingResponse(text_streamer(), media_type="text/plain")
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OS Kernel Error: {str(e)}")
+        # Clear out current session history on hard crashes to avoid poison-pill loops
+        if query.session_id in SESSION_MEMORY:
+            SESSION_MEMORY[query.session_id] = []
+        print(f"[CORE KERNEL CRASH]: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"OS Kernel Error Trace: {str(e)}")
+
+
+# Mount index.html at root directory route
+@app.get("/", response_class=HTMLResponse)
+async def get_web_ui():
+    html_path = os.path.join(os.path.dirname(__file__), "index.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return f.read()
