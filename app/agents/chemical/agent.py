@@ -4,8 +4,8 @@ from app.config import settings
 class ChemicalAgent:
     def __init__(self):
         self.headers = {"accept": "application/json", "Content-Type": "application/json"}
-        if settings.HF_TOKEN:
-            self.headers["Authorization"] = f"Bearer {settings.HF_TOKEN}"
+        # if settings.HF_TOKEN:
+        #     self.headers["Authorization"] = f"Bearer {settings.HF_TOKEN}"
 
     async def run(self, intent: str, entities: dict) -> str:
         # استخراج المتغيرات من الـ Orchestrator
@@ -50,7 +50,7 @@ class ChemicalAgent:
                     payload = {
                         "disease_name": target_disease,
                         "min_score": 0,
-                        "top_n_targets": 
+                        "top_n_targets": 5
                     }
                     
                     response = await client.post(url, json=payload, headers=self.headers)
