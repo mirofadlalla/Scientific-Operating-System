@@ -14,5 +14,53 @@
       "intent": "ADMET_ANALYSIS",
       "agent": "CHEMICAL_AGENT"
     }
+  },
+  {
+    "session_id": "discovery_session_abc123",
+    "text": "وعليكم السلام، كيف حالك؟",
+    "metadata": {
+      "intent": "GREETING",
+      "agent": "NONE"
+    }
+  },
+  {
+    "session_id": "voice_session_cddkyn",
+    "text": "It seems like you were about to share something, but it got cut off. Don't worry, I'm here to listen and help. Please feel free to continue what you were saying, and I'll do my best to provide a helpful and informative response. What's on your mind, and how can I assist you today?",
+    "metadata": {
+      "intent": "APP_HELP",
+      "agent": "APP_AGENT"
+    }
+  },
+  {
+    "session_id": "voice_session_cddkyn",
+    "text": "أهلاً بك مرة أخرى، يسعدني أن أساعدك فيما تحتاج إليه. بالنسبة لسؤالك حول دواء \"الأسبابين\"، يمكنني أن أ 제공 لك بعض المعلومات حول هذا الموضوع.\n\nدواء الأسبابين هو دواء يستخدم لعلاج بعض الحالات الصحية، ويمكن أن يكون له آثار جانبية مثل أي دواء آخر. ومع ذلك، فإن دواء الأسبابين يعتبر دواء آمن عندما يتم استخدامه وفقًا لتوجيهات الطبيب وبالجرعة الموصى بها.\n\nمن المهم أن تتبع تعليمات الطبيب بدقة وتتناول الدواء كما هو موصوف لك. إذا كنت تعاني من أي أعراض جانبية أو لديك أسئلة حول دواء الأسبابين، فيمكنك أن تتحدث مع طبيبك أو الصيدلي للاستشارة.\n\nأيضًا، من المهم أن تدرك أن دواء الأسبابين قد يتفاعل مع بعض الأدوية الأخرى أو الحالات الصحية، لذلك من الضروري أن ت告诉 طبيبك عن أي أدوية أخرى تتناولها أو أي حالات صحية لديك قبل أن تبدأ في تناول دواء الأسبابين.\n\nأرجو أن تكون هذه المعلومات مفيدة لك، إذا كنت لديك أي أسئلة أخرى أو تحتاج إلى مزيد من المعلومات، لا تتردد في السؤال.",
+    "metadata": {
+      "intent": "APP_HELP",
+      "agent": "APP_AGENT"
+    }
+  },
+  {
+    "session_id": "voice_session_cddkyn",
+    "text": "It seems like you're indicating that you're about to leave or end our conversation. If that's the case, I want to thank you for reaching out and interacting with me. Before you go, is there anything else I can help you with or any questions you might have that I haven't addressed yet? Your satisfaction and clarity on any topic you've inquired about are important to me. If everything is okay and you're just concluding our chat, I wish you a great day and appreciate the opportunity to have assisted you.",
+    "metadata": {
+      "intent": "APP_HELP",
+      "agent": "APP_AGENT"
+    }
+  },
+  {
+    "session_id": "voice_session_cddkyn",
+    "text": "مرحباً بك، يسعدني أن أتفاعل معك. إذا كنت تسأل عن الأسبابين دمت، فمن المحتمل أنك تتساءل عن سبب أو أسباب حدوث شيء ما. في سياق الحوار، يمكن أن تكون الأسباب متعددة ومرتبطة بفروع معرفية مختلفة مثل العلوم، الفلسفة، أو حتى الشؤون اليومية.\n\nإذا كنت تبحث عن تفسير لظاهرة معينة أو حدث، فيمكنني أن أقدم لك معلومات عامة حول كيفية تحديد الأسباب والنتائج في مختلف المجالات. على سبيل المثال، في العلوم، يتم استخدام المنهج العلمي لتحديد الأسباب والآثار من خلال التجارب والرصد. في الفلسفة، يتم استكشاف المفاهيم والقيم الأخلاقية لتحليل الأسباب والنتائج.\n\nإذا كنت تود أن تُشرح أو تُقدم تفاصيل أكثر حول ما تقصد ب \"الأسبابين دمت\"، سأكون سعيداً لمساعدتك في فهم الموضوع بشكل أفضل. يرجى إعلامي إذا كان هناك أي شيء محدد تود مناقشته أو سؤاله، وسأبذل قصارى جهدي لتقديم معلومات دقيقة ومفيدة.",
+    "metadata": {
+      "intent": "APP_HELP",
+      "agent": "APP_AGENT"
+    }
+  },
+  {
+    "session_id": "voice_session_5b30p5",
+    "text": "لا، الأسبرين ليس دواء سامًا بشكل عام عند استخدامه وفقًا للتعليمات الطبية. ومع ذلك، يمكن أن يكون له آثار جانبية عند تناوله بكميات كبيرة أو بانتظام دون إشراف طبي. يُستخدم الأسبرين بشكل شائع لتخفيف الألم والالتهاب، كما يُستخدم في بعض الأحيان لمنع النوبات القلبية والسكتات الدماغية. ومع ذلك، من المهم اتباع التوصيات الطبية عند تناول الأسبرين، حيث يمكن أن يسبب مشاكل في الجهاز الهضمي أو تفاعلات حساسية في بعض الأشخاص. إذا كنت تعاني من أي مشاكل صحية أو تتناول أدوية أخرى، فيجب استشارة الطبيب قبل تناول الأسبرين.",
+    "metadata": {
+      "intent": "ADMET_ANALYSIS",
+      "agent": "CHEMICAL_AGENT"
+    }
   }
 ]

@@ -2,15 +2,26 @@ import os
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")  # REQUIRED: Set via environment variable
+    # Core API Keys
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")  # REQUIRED
+
+    # Groq endpoints
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
 
+    # Groq Whisper model for STT (no OpenAI key needed)
+    GROQ_WHISPER_MODEL: str = "whisper-large-v3-turbo"
+
+    # Optional: OpenAI for high-quality TTS (alloy, nova, shimmer…)
+    # If not set, the browser's SpeechSynthesis API is used instead
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+
+    # External Service URLs
     ADMET_AI_URL: str = os.getenv("ADMET_AI_URL", "https://shdwRow-ailixir-admet.hf.space")
     CHEMICAL_AI_URL: str = os.getenv("CHEMICAL_AI_URL", "https://RottenShadow-ailixir-chemical-rag.hf.space")
     DRUG_REPURPOSING_URL: str = os.getenv("DRUG_REPURPOSING_URL", "https://RottenShadow-ailixir-drug-repurposing.hf.space")
     GENERATION_SERVICE_URL: str = os.getenv("GENERATION_SERVICE_URL", "https://shdwRow-ailixir-generation.hf.space")
-    
-    # أسماء الموديلات المتاحة 
+
+    # Available Models
     ORCHESTRATOR_MODEL: str = "llama-3.3-70b-versatile"
     QWEN_MODEL: str = "qwen/qwen3-32b"
 

@@ -3,262 +3,997 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Scientific OS - Drug Discovery Hub</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>AI Voice OS — Scientific Discovery Hub</title>
+    <meta name="description" content="Professional AI Voice OS for Drug Discovery with real-time streaming STT, TTS, WebSocket voice channel, VAD, and interrupt handling.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base:    #080c14;
+            --bg-panel:   #0d1420;
+            --bg-card:    #111927;
+            --border:     rgba(99,179,237,0.12);
+            --accent:     #3ecfcf;
+            --accent2:    #6366f1;
+            --accent3:    #f59e0b;
+            --text-prim:  #e2e8f0;
+            --text-sec:   #8898aa;
+            --text-muted: #4a5568;
+            --green:      #22c55e;
+            --red:        #ef4444;
+            --orange:     #f97316;
+            --radius:     16px;
+            --radius-sm:  10px;
+        }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-base);
+            color: var(--text-prim);
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        body::before {
+            content: '';
+            position: fixed; inset: 0;
+            background-image:
+                linear-gradient(rgba(62,207,207,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(62,207,207,0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+            pointer-events: none; z-index: 0;
+        }
+
+        /* ── Header ── */
+        header {
+            position: relative; z-index: 10;
+            background: rgba(13,20,32,0.97);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex; align-items: center; justify-content: space-between;
+            backdrop-filter: blur(20px);
+        }
+        .logo { display: flex; align-items: center; gap: 12px; }
+        .logo-icon {
+            width: 42px; height: 42px;
+            background: linear-gradient(135deg,#3ecfcf,#6366f1);
+            border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 20px;
+            box-shadow: 0 0 20px rgba(62,207,207,0.3);
+        }
+        .logo-text h1 {
+            font-size: 16px; font-weight: 700;
+            background: linear-gradient(90deg,#3ecfcf,#6366f1);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .logo-text p { font-size: 11px; color: var(--text-sec); font-family: 'JetBrains Mono',monospace; }
+        .header-badges { display: flex; align-items: center; gap: 10px; }
+        .badge {
+            display: flex; align-items: center; gap: 6px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid var(--border);
+            border-radius: 20px; padding: 5px 12px;
+            font-size: 11px; font-family: 'JetBrains Mono',monospace; color: var(--text-sec);
+        }
+        .badge .dot { width:6px; height:6px; border-radius:50%; background:var(--green); animation: pulse-dot 2s infinite; }
+        @keyframes pulse-dot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.5;transform:scale(.8)} }
+
+        /* ── Chat ── */
+        #chat-container {
+            flex: 1; overflow-y: auto; padding: 24px;
+            display: flex; flex-direction: column; gap: 16px;
+            position: relative; z-index: 1; scroll-behavior: smooth;
+        }
+        #chat-container::-webkit-scrollbar { width: 4px; }
+        #chat-container::-webkit-scrollbar-thumb { background: var(--border); border-radius:2px; }
+
+        .message-row {
+            display: flex; align-items: flex-start; gap: 12px;
+            animation: msg-in .3s ease-out; max-width: 820px;
+        }
+        .message-row.user { align-self: flex-end; flex-direction: row-reverse; }
+        .message-row.ai   { align-self: flex-start; }
+        .message-row.sys  { align-self: center; }
+        @keyframes msg-in { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+        .avatar {
+            width:34px; height:34px; border-radius:10px;
+            display:flex; align-items:center; justify-content:center;
+            font-size:13px; font-weight:700; flex-shrink:0;
+        }
+        .avatar.ai   { background:linear-gradient(135deg,#3ecfcf,#6366f1); color:#fff; font-family:'JetBrains Mono',monospace; }
+        .avatar.user { background:linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; font-family:'JetBrains Mono',monospace; }
+        .avatar.sys  { background:rgba(255,255,255,.04); border:1px solid var(--border); color:var(--text-sec); font-size:16px; }
+
+        .bubble {
+            padding: 13px 17px; border-radius: var(--radius);
+            font-size: 14px; line-height: 1.75; max-width: 660px;
+            white-space: pre-wrap; word-break: break-word;
+        }
+        .bubble.ai   { background:rgba(17,25,39,.9); border:1px solid var(--border); }
+        .bubble.user { background:rgba(99,102,241,.15); border:1px solid rgba(99,102,241,.25); }
+        .bubble.sys  { background:rgba(255,255,255,.03); border:1px dashed var(--border); color:var(--text-sec); font-size:12px; font-family:'JetBrains Mono',monospace; padding:9px 13px; }
+        .bubble.sys.error   { border-color:rgba(239,68,68,.3); color:#fc8181; }
+        .bubble.sys.success { border-color:rgba(34,197,94,.3); color:#68d391; }
+
+        .streaming::after { content:'|'; animation:blink .7s step-end infinite; color:var(--accent); margin-left:2px; }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+
+        .thought-box {
+            background:rgba(62,207,207,.04); border:1px dashed rgba(62,207,207,.18);
+            border-radius:var(--radius); padding:13px 17px;
+            font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--accent); max-width:480px;
+        }
+        .thought-box .th-head { color:var(--text-muted); font-size:10px; text-transform:uppercase; letter-spacing:1px; margin-bottom:7px; }
+        .thought-line { margin-top:4px; }
+
+        /* ── LIVE VOICE OVERLAY ── */
+        #live-voice-overlay {
+            position: fixed; inset: 0; z-index: 100;
+            background: rgba(8,12,20,0.92);
+            backdrop-filter: blur(24px);
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 32px;
+        }
+        #live-voice-overlay.active { display: flex; }
+
+        /* Orb */
+        .voice-orb-wrap { position: relative; width: 180px; height: 180px; display:flex; align-items:center; justify-content:center; }
+
+        .orb-ring {
+            position: absolute;
+            border-radius: 50%;
+            border: 2px solid rgba(62,207,207,0.2);
+            animation: orb-idle 3s ease-in-out infinite;
+        }
+        .orb-ring:nth-child(1) { width:180px; height:180px; animation-delay:0s; }
+        .orb-ring:nth-child(2) { width:150px; height:150px; animation-delay:.4s; }
+        .orb-ring:nth-child(3) { width:120px; height:120px; animation-delay:.8s; }
+
+        @keyframes orb-idle {
+            0%,100% { transform:scale(1); opacity:.3; }
+            50%      { transform:scale(1.04); opacity:.6; }
+        }
+
+        .orb-ring.speaking {
+            border-color: rgba(249,115,22,0.6);
+            animation: orb-speaking 0.5s ease-in-out infinite alternate;
+        }
+        @keyframes orb-speaking {
+            from { transform:scale(1);    opacity:.5; box-shadow:0 0 0 0 rgba(249,115,22,.3); }
+            to   { transform:scale(1.08); opacity:1;  box-shadow:0 0 30px 10px rgba(249,115,22,.15); }
+        }
+
+        .orb-core {
+            width: 80px; height: 80px;
+            border-radius: 50%;
+            background: linear-gradient(135deg,#3ecfcf,#6366f1);
+            display:flex; align-items:center; justify-content:center;
+            font-size: 32px;
+            box-shadow: 0 0 40px rgba(62,207,207,.4);
+            transition: all .2s;
+            z-index: 1;
+        }
+        .orb-core.speaking {
+            background: linear-gradient(135deg,#f97316,#ef4444);
+            box-shadow: 0 0 50px rgba(249,115,22,.5);
+        }
+        .orb-core.processing {
+            background: linear-gradient(135deg,#6366f1,#8b5cf6);
+            box-shadow: 0 0 50px rgba(99,102,241,.5);
+            animation: orb-spin 2s linear infinite;
+        }
+        @keyframes orb-spin { to { filter: hue-rotate(360deg); } }
+
+        /* Live transcript */
+        #live-transcript {
+            font-size: 22px;
+            font-weight: 600;
+            color: var(--text-prim);
+            text-align: center;
+            max-width: 600px;
+            min-height: 60px;
+            line-height: 1.5;
+            transition: all .3s;
+        }
+        #live-transcript.arabic { direction: rtl; font-size: 24px; }
+        #live-transcript.dim { color: var(--text-muted); font-size: 16px; font-weight:400; }
+
+        #live-status {
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-sec);
+            letter-spacing: .5px;
+        }
+
+        /* Waveform */
+        .live-waveform {
+            display: flex; align-items: center; gap: 4px; height: 40px;
+        }
+        .live-waveform span {
+            display: block; width: 4px; border-radius: 3px;
+            background: var(--accent); height: 4px;
+            transition: height .08s ease;
+        }
+        .live-waveform.speaking span { background: var(--orange); }
+
+        /* Stop/interrupt button */
+        #overlay-stop-btn {
+            padding: 12px 32px;
+            background: rgba(239,68,68,0.15);
+            border: 1px solid rgba(239,68,68,0.4);
+            color: var(--red);
+            border-radius: 40px;
+            font-size: 14px; font-weight:600; cursor:pointer;
+            transition: all .2s;
+        }
+        #overlay-stop-btn:hover { background:rgba(239,68,68,.25); transform:scale(1.03); }
+
+        /* Silence bar */
+        #silence-bar-wrap {
+            width: 220px; height: 4px;
+            background: rgba(255,255,255,.07);
+            border-radius: 2px;
+            overflow: hidden;
+            display: none;
+        }
+        #silence-bar-wrap.visible { display: block; }
+        #silence-bar {
+            height: 100%; width: 0%;
+            background: linear-gradient(90deg,var(--accent),var(--accent2));
+            border-radius: 2px;
+            transition: width .1s linear;
+        }
+
+        /* ── Bottom bar ── */
+        #bottom-bar {
+            position: relative; z-index: 10;
+            background: rgba(13,20,32,0.97);
+            border-top: 1px solid var(--border);
+            backdrop-filter: blur(20px);
+            padding: 14px 24px;
+        }
+
+        #input-row { display:flex; align-items:center; gap:10px; }
+
+        .icon-btn {
+            width:46px; height:46px; border-radius:14px;
+            border:1px solid var(--border);
+            background:var(--bg-card);
+            color:var(--text-sec); cursor:pointer;
+            display:flex; align-items:center; justify-content:center;
+            font-size:19px; transition:all .2s; flex-shrink:0; position:relative;
+        }
+        .icon-btn:hover { border-color:var(--accent); color:var(--accent); background:rgba(62,207,207,.07); }
+        .icon-btn.active-tts   { background:rgba(245,158,11,.1); border-color:rgba(245,158,11,.4); color:var(--accent3); }
+        .icon-btn.ws-on        { background:rgba(62,207,207,.1); border-color:rgba(62,207,207,.4); color:var(--accent); }
+        .icon-btn.recording    { background:rgba(239,68,68,.12); border-color:rgba(239,68,68,.4); color:var(--red); animation:rec-glow 1.5s ease-in-out infinite alternate; }
+        @keyframes rec-glow { from{box-shadow:0 0 0 0 rgba(239,68,68,.2)} to{box-shadow:0 0 16px 4px rgba(239,68,68,.12)} }
+
+        #user-input {
+            flex:1; background:var(--bg-card); border:1px solid var(--border);
+            border-radius:14px; padding:12px 18px;
+            font-size:14px; font-family:'Inter',sans-serif;
+            color:var(--text-prim); outline:none;
+            transition:border-color .2s,box-shadow .2s;
+        }
+        #user-input:focus { border-color:rgba(62,207,207,.4); box-shadow:0 0 0 3px rgba(62,207,207,.06); }
+        #user-input::placeholder { color:var(--text-muted); }
+
+        #send-btn {
+            height:46px; padding:0 22px; border-radius:14px; border:none;
+            background:linear-gradient(135deg,#3ecfcf,#6366f1);
+            color:#fff; font-size:14px; font-weight:600; cursor:pointer;
+            display:flex; align-items:center; gap:8px;
+            transition:opacity .2s,transform .1s,box-shadow .2s; flex-shrink:0;
+        }
+        #send-btn:hover { opacity:.9; transform:translateY(-1px); box-shadow:0 6px 20px rgba(62,207,207,.25); }
+        #send-btn:disabled { opacity:.35; cursor:not-allowed; transform:none; }
+
+        #status-bar {
+            padding:6px 0 0;
+            display:flex; align-items:center; gap:10px;
+            font-size:11px; font-family:'JetBrains Mono',monospace; color:var(--text-muted);
+        }
+        #ws-dot { width:6px; height:6px; border-radius:50%; background:var(--text-muted); transition:background .3s; }
+        #ws-dot.on  { background:var(--green); }
+        #ws-dot.off { background:var(--text-muted); }
+        #ws-dot.err { background:var(--red); }
+
+        /* TTS playback bar */
+        #tts-bar {
+            display:none; align-items:center; gap:10px;
+            padding:8px 0 10px; font-size:12px; font-family:'JetBrains Mono',monospace; color:var(--accent3);
+        }
+        #tts-bar.active { display:flex; }
+        .tts-waves { display:flex; gap:3px; align-items:center; height:16px; }
+        .tts-waves span { width:3px; border-radius:2px; background:var(--accent3); animation:tw .8s ease-in-out infinite; }
+        .tts-waves span:nth-child(2){animation-delay:.15s}
+        .tts-waves span:nth-child(3){animation-delay:.3s}
+        .tts-waves span:nth-child(4){animation-delay:.45s}
+        @keyframes tw { 0%,100%{height:3px} 50%{height:14px} }
+
+        * { scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
+    </style>
 </head>
-<body class="bg-gray-900 text-gray-100 font-sans h-screen flex flex-col">
+<body>
 
-    <header class="bg-gray-800 border-b border-gray-700 p-4 flex items-center justify-between shadow-md">
-        <div class="flex items-center space-x-3">
-            <div class="bg-teal-500 text-gray-900 p-2 rounded-lg font-bold text-xl">🧬</div>
-            <div>
-                <h1 class="text-lg font-bold text-teal-400 tracking-wide">AI Scientific OS</h1>
-                <p class="text-xs text-gray-400">Multi-Agent Drug Discovery & Biomedical Core</p>
-            </div>
+<!-- HEADER -->
+<header>
+    <div class="logo">
+        <div class="logo-icon">🧬</div>
+        <div class="logo-text">
+            <h1>AI Voice OS</h1>
+            <p>Scientific Discovery Hub &middot; Multilingual Voice Core</p>
         </div>
-        <div class="flex items-center space-x-2 text-xs bg-gray-900 px-3 py-1.5 rounded-full border border-gray-700">
-            <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-            <span class="text-gray-300 font-mono">Session: active_research_01</span>
+    </div>
+    <div class="header-badges">
+        <div class="badge"><span class="dot"></span><span id="ws-label">WebSocket: off</span></div>
+        <div class="badge"><span>⚡</span><span>Groq &middot; Whisper-v3-turbo</span></div>
+    </div>
+</header>
+
+<!-- CHAT -->
+<main id="chat-container" role="main">
+    <div class="message-row ai">
+        <div class="avatar ai">OS</div>
+        <div class="bubble ai">
+Welcome, Professor.
+
+<strong>AI Voice OS</strong> is ready — supports Arabic &amp; English.
+
+  🌐  Click <strong>WS</strong> to open the voice channel, then click <strong>🎙️</strong>
+  🗣️  Speak naturally in Arabic or English — silence is auto-detected
+  ✋  Click the orb or press <strong>Stop</strong> to interrupt mid-response
+  🔊  Toggle <strong>TTS</strong> to hear AI responses read aloud
         </div>
-    </header>
+    </div>
+</main>
 
-    <main id="chat-container" class="flex-1 overflow-y-auto p-6 space-y-4 max-w-4xl mx-auto w-full">
-        <div class="flex items-start space-x-3 max-w-2xl">
-            <div class="bg-teal-600 text-white p-2 rounded-lg text-sm font-bold shadow">OS</div>
-            <div class="bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-sm text-sm leading-relaxed">
-                Welcome Professor. The Chemical Discovery Engine (FAISS, ADMET) and Biomedical Reasoning Engine (OpenBioLLM) are online. Enter your inquiry regarding molecular structures, virtual screening, or therapeutic mechanisms.
-            </div>
-        </div>
-    </main>
+<!-- LIVE VOICE OVERLAY (shown during active voice session) -->
+<div id="live-voice-overlay">
+    <div class="voice-orb-wrap">
+        <div class="orb-ring" id="ring1"></div>
+        <div class="orb-ring" id="ring2"></div>
+        <div class="orb-ring" id="ring3"></div>
+        <div class="orb-core" id="orb-core">🎙️</div>
+    </div>
 
-    <footer class="bg-gray-800 border-t border-gray-700 p-4 shadow-lg">
-        <form id="query-form" class="max-w-4xl mx-auto flex space-x-3 items-center">
-            <button 
-                type="button"
-                id="voice-btn"
-                class="bg-gray-700 hover:bg-gray-600 text-gray-300 p-3 rounded-xl transition-colors shadow-md flex items-center justify-center border border-gray-600 relative group"
-                title="Speak to dictate text"
-            >
-                <span id="mic-icon" class="text-lg">🎙️</span>
-                <span id="mic-pulse" class="absolute inset-0 rounded-xl bg-red-500/30 animate-ping hidden"></span>
-            </button>
+    <div class="live-waveform" id="live-waveform">
+        <span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span>
+        <span></span><span></span>
+    </div>
 
-            <input 
-                type="text" 
-                id="user-input" 
-                placeholder="Ask or click mic to speak (e.g., virtual screening, ADMET properties)..." 
-                class="flex-1 bg-gray-900 border border border-gray-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-teal-500 text-gray-100 placeholder-gray-500 transition-colors"
-                required
-                autocomplete="off"
-            >
-            
-            <button 
-                type="submit" 
-                id="send-btn"
-                class="bg-teal-500 hover:bg-teal-600 text-gray-900 font-medium px-6 py-3 rounded-xl text-sm transition-colors flex items-center space-x-2 shadow-md"
-            >
-                <span>Analyze</span>
-                <span>⚡</span>
-            </button>
-        </form>
-    </footer>
+    <!-- Silence countdown bar -->
+    <div id="silence-bar-wrap"><div id="silence-bar"></div></div>
 
-    <script>
-        const chatContainer = document.getElementById('chat-container');
-        const queryForm = document.getElementById('query-form');
-        const userInput = document.getElementById('user-input');
-        const sendBtn = document.getElementById('send-btn');
-        const voiceBtn = document.getElementById('voice-btn');
-        const micIcon = document.getElementById('mic-icon');
-        const micPulse = document.getElementById('mic-pulse');
+    <div id="live-transcript" class="dim">Listening...</div>
+    <div id="live-status">Speak now — auto-detects Arabic &amp; English</div>
 
-        // Static session identifiers for simplicity
-        const sessionId = "discovery_session_abc123";
-        const userId = "researcher_main";
+    <button id="overlay-stop-btn" onclick="endLiveSession()">■ Stop &amp; Close</button>
+</div>
 
-        // Predefined agent execution sequences to entertain and inform the user during raw API waits
-        const dynamicThoughts = [
-            "🧠 Orchestrator: Classifying intent and parsing molecular structures...",
-            "🔬 Booting up expert discovery network pipelines...",
-            "⚡ Dispatching concurrent sub-tasks via Asyncio Kernel...",
-            "🧪 Chemical Engine: Accessing Hugging Face Spaces for deep screening computation...",
-            "🧬 Biomedical Engine: Querying OpenBioLLM for target interactions and pathways...",
-            "📊 Data Aggregator: Trimming payload weights and clearing token metadata...",
-            "🤖 Response Synthesizer: Melting pipeline insights into a cohesive Arabic summary..."
-        ];
+<!-- BOTTOM BAR -->
+<div id="bottom-bar">
+    <div id="tts-bar">
+        <div class="tts-waves"><span></span><span></span><span></span><span></span></div>
+        <span>Speaking...</span>
+        <button onclick="stopTTS()" style="background:none;border:1px solid rgba(245,158,11,.3);color:var(--accent3);border-radius:8px;padding:2px 10px;font-size:11px;cursor:pointer;">Stop</button>
+    </div>
+    <div id="input-row">
+        <!-- WS toggle -->
+        <button class="icon-btn" id="ws-btn" title="Open WebSocket voice channel">🌐</button>
+        <!-- Mic -->
+        <button class="icon-btn" id="mic-btn" title="Start voice session (hands-free)">🎙️</button>
+        <!-- TTS toggle -->
+        <button class="icon-btn active-tts" id="tts-btn" title="Disable TTS readback">🔊</button>
+        <input type="text" id="user-input" placeholder="Type or click 🎙️ to speak (Arabic / English)..." autocomplete="off">
+        <button id="send-btn" type="button">Analyze ⚡</button>
+    </div>
+    <div id="status-bar">
+        <div id="ws-dot" class="off"></div>
+        <span id="ws-status">Not connected</span>
+        <span>&middot;</span>
+        <span>STT: Groq Whisper (auto-lang)</span>
+        <span>&middot;</span>
+        <span id="tts-status">TTS: ON - speaks aloud</span>
+    </div>
+</div>
 
-        // --- Native Voice Recognition (Web Speech API) Setup ---
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        let recognition = null;
-        let isRecording = false;
+<audio id="audio-player" style="display:none"></audio>
 
-        if (SpeechRecognition) {
-            recognition = new SpeechRecognition();
-            recognition.continuous = false; // Stop automatically when user finishes the sentence
-            recognition.interimResults = false; // Only deliver final concrete transcription block
-            recognition.lang = 'ar-EG'; // Set speech recognition language targeting Arabic (Egypt/Universal)
+<script>
+'use strict';
 
-            // Fired when the browser successfully binds and receives mic sound inputs
-            recognition.onstart = () => {
-                isRecording = true;
-                micIcon.innerText = "🛑"; // Change mic icon to stop indicator
-                voiceBtn.classList.remove('bg-gray-700', 'hover:bg-gray-600', 'text-gray-300');
-                voiceBtn.classList.add('bg-red-600', 'hover:bg-red-700', 'text-white', 'border-red-500');
-                micPulse.classList.remove('hidden'); // Show pulsing red border glow
-                userInput.placeholder = "Listening professor... Speak clearly now.";
-            };
+// ─── Constants ────────────────────────────────────────────────────────────────
+const SESSION_ID = 'voice_session_' + Math.random().toString(36).slice(2,8);
+const USER_ID    = 'researcher_main';
+const SILENCE_DURATION_MS = 3000;   // ms of quiet before auto-send (3.0s so pauses don't fire early)
+const SPEECH_THRESHOLD    = 15;     // fallback AnalyserNode freq avg to count as speech
+const MIN_SPEECH_MS       = 250;    // allow single words (250ms), discard only very short clicks
 
-            // Fired when mic pipeline captures and transcribes a clean sentence chunk
-            recognition.onresult = (event) => {
-                const speechToTextResult = event.results[0][0].transcript;
-                userInput.value = speechToTextResult; // Safely inject text block into the chat input field
-            };
+const THOUGHTS = [
+    '🧠 Orchestrator: Classifying intent...',
+    '🔬 Booting expert discovery pipelines...',
+    '⚡ Dispatching concurrent sub-tasks...',
+    '🧪 Chemical Engine: querying FAISS / ADMET...',
+    '🧬 Biomedical Engine: querying OpenBioLLM...',
+    '🤖 Synthesizing expert response...',
+];
 
-            // Error boundary safe mapping for speech processing exceptions
-            recognition.onerror = (event) => {
-                console.error("[Voice Core Error]: ", event.error);
-            };
+// ─── DOM ──────────────────────────────────────────────────────────────────────
+const chatEl          = document.getElementById('chat-container');
+const userInputEl     = document.getElementById('user-input');
+const sendBtn         = document.getElementById('send-btn');
+const micBtn          = document.getElementById('mic-btn');
+const wsBtn           = document.getElementById('ws-btn');
+const ttsBtn          = document.getElementById('tts-btn');
+const wsDot           = document.getElementById('ws-dot');
+const wsLabelEl       = document.getElementById('ws-label');
+const wsStatusEl      = document.getElementById('ws-status');
+const ttsStatusEl     = document.getElementById('tts-status');
+const ttsBar          = document.getElementById('tts-bar');
+const overlay         = document.getElementById('live-voice-overlay');
+const orbCore         = document.getElementById('orb-core');
+const ring1           = document.getElementById('ring1');
+const ring2           = document.getElementById('ring2');
+const ring3           = document.getElementById('ring3');
+const liveTranscript  = document.getElementById('live-transcript');
+const liveStatus      = document.getElementById('live-status');
+const liveWaveform    = document.getElementById('live-waveform');
+const silenceBarWrap  = document.getElementById('silence-bar-wrap');
+const silenceBar      = document.getElementById('silence-bar');
+const waveSpans       = liveWaveform.querySelectorAll('span');
 
-            // Reset UI states back to laboratory template parameters when voice sessions terminate
-            recognition.onend = () => {
-                isRecording = false;
-                micIcon.innerText = "🎙️";
-                voiceBtn.classList.remove('bg-red-600', 'hover:bg-red-700', 'text-white', 'border-red-500');
-                voiceBtn.classList.add('bg-gray-700', 'hover:bg-gray-600', 'text-gray-300');
-                micPulse.classList.add('hidden');
-                userInput.placeholder = "Ask or click mic to speak (e.g., virtual screening, ADMET properties)...";
-            };
+// ─── State ────────────────────────────────────────────────────────────────────
+let ttsEnabled    = true;   // ON by default — AI always speaks its answer
+let wsChannel     = null;
+let wsConnected   = false;
+let liveActive    = false;        // overlay open?
+let mediaRecorder = null;
+let audioChunks   = [];
+let audioCtx      = null;
+let analyser      = null;
+let micStream     = null;
+let animFrame     = null;
 
-            // Bind click event handler to control recording state toggles
-            voiceBtn.addEventListener('click', () => {
-                if (isRecording) {
-                    recognition.stop();
-                } else {
-                    recognition.start();
-                }
-            });
-        } else {
-            // Gracefully disable voice features if browser doesn't natively support Web Speech API
-            voiceBtn.disabled = true;
-            voiceBtn.title = "Voice recognition not supported on this browser version.";
-            micIcon.innerText = "❌";
-        }
+// VAD & Calibration state
+let isSpeaking       = false;
+let speechStartTime  = null;
+let silenceStartTime = null;
+let silenceTimer     = null;
+let silenceProgress  = 0;
+let isCalibrating    = false;
+let calibrationData  = [];
+let calibratedThreshold = 15; // self-calibrates based on ambient noise
 
-        // --- Core Chat Submission Pipeline ---
-        queryForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const text = userInput.value.trim();
-            if (!text) return;
+// AI streaming state
+let currentAIBubble = null;
+let fullAIReply     = '';
+let aiStreaming     = false;
 
-            // Make sure to kill voice recording sessions if user clicks analyze midway
-            if (isRecording && recognition) recognition.stop();
+// ─── Utils ────────────────────────────────────────────────────────────────────
+function appendMsg(role, text='', extra='') {
+    const row = document.createElement('div');
+    row.className = `message-row ${role}`;
+    const av  = document.createElement('div');
+    av.className = `avatar ${role}`;
+    av.textContent = role==='user' ? 'RX' : role==='ai' ? 'OS' : '⚙';
+    const bub = document.createElement('div');
+    bub.className  = `bubble ${role}${extra?' '+extra:''}`;
+    bub.textContent = text;
+    row.appendChild(av);
+    row.appendChild(bub);
+    chatEl.appendChild(row);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return bub;
+}
+const sysMsg = (t,type='') => appendMsg('sys',t,type);
 
-            // Disable UI inputs during live data stream
-            userInput.value = '';
-            userInput.disabled = true;
-            sendBtn.disabled = true;
-            voiceBtn.disabled = true;
+function setOrbState(state) {
+    // state: 'idle' | 'speaking' | 'processing' | 'answering'
+    orbCore.className = 'orb-core' + (state==='speaking'?' speaking':state==='processing'||state==='answering'?' processing':'');
+    [ring1,ring2,ring3].forEach(r => r.className='orb-ring'+(state==='speaking'?' speaking':''));
+    const icons = {idle:'🎙️', speaking:'🔴', processing:'⚡', answering:'🤖'};
+    orbCore.textContent = icons[state] || '🎙️';
+}
 
-            // Append User Message bubble to DOM
-            appendMessage('User', text, 'bg-teal-900/40 border border-teal-700/50 ml-auto max-w-2xl text-right');
+function setLiveStatus(msg, dim=false) {
+    liveStatus.textContent = msg;
+}
 
-            // Inject the Thinking/Status Box dynamically into the DOM
-            const thoughtBox = document.createElement('div');
-            thoughtBox.className = "bg-gray-950 border border-dashed border-teal-800/60 p-4 rounded-xl max-w-xl text-xs font-mono text-teal-400 space-y-1.5 animate-pulse shadow-inner";
-            thoughtBox.innerHTML = `<div class="font-bold text-gray-400 uppercase tracking-wider mb-1">⚙️ Kernel Processing:</div>`;
-            chatContainer.appendChild(thoughtBox);
-            chatContainer.scrollTop = chatContainer.scrollHeight;
+function detectArabic(text) {
+    return /[\u0600-\u06FF]/.test(text);
+}
 
-            // Start a live ticker interval to rotate agent thoughts while awaiting the HTTP response
-            let thoughtIdx = 0;
-            const updateThought = () => {
-                if (thoughtIdx < dynamicThoughts.length) {
-                    const line = document.createElement('div');
-                    line.innerText = dynamicThoughts[thoughtIdx];
-                    thoughtBox.appendChild(line);
-                    thoughtIdx++;
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                }
-            };
-            
-            // Initial fires and setting up the interval step loops
-            updateThought(); 
-            const thoughtInterval = setInterval(updateThought, 900);
+// ─── TTS ─────────────────────────────────────────────────────────────────────
+let currentUtterance = null;
+let voicesList = [];
 
-            try {
-                // Issue fetch request to the backend orchestrator endpoint
-                const response = await fetch('/orchestrate', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        session_id: sessionId,
-                        user_id: userId,
-                        text_input: text
-                    })
-                });
+function loadVoices() {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        voicesList = window.speechSynthesis.getVoices();
+    }
+}
+if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    loadVoices();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+        window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+}
 
-                // Terminate the background thinking loop once the backend begins streaming data
-                clearInterval(thoughtInterval);
-                thoughtBox.remove(); 
+function unlockTTS() {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance('');
+        window.speechSynthesis.speak(u);
+        console.log("[TTS] Unlocked voice synthesis via user gesture");
+    }
+}
 
-                if (!response.ok) {
-                    throw new Error(`HTTP Error Status: ${response.status}`);
-                }
+function cleanTextForTTS(text) {
+    if (!text) return '';
+    return text
+        .replace(/```[\s\S]*?```/g, '') // remove code blocks
+        .replace(/`([^`]+)`/g, '$1')   // remove inline code backticks
+        .replace(/\*\*([^*]+)\*\*/g, '$1') // remove bold
+        .replace(/\*([^*]+)\*/g, '$1')     // remove italic
+        .replace(/#+\s+/g, '')             // remove headers
+        .replace(/-\s+/g, '')              // remove list bullets
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // remove links, keep text
+        .replace(/[^\w\s\u0600-\u06FF\d.,!?;:()]/g, '') // remove emojis/special chars, keep Arabic & English letters & punctuation
+        .replace(/\s+/g, ' ')              // collapse spaces
+        .trim();
+}
 
-                // Append a blank Assistant bubble to dynamically inject tokens into
-                const assistantBubble = appendMessage('OS', '', 'bg-gray-800 border border-gray-700 max-w-2xl');
+function speakText(text) {
+    if (!ttsEnabled || !text) return;
+    stopTTS();
+    
+    const cleanedText = cleanTextForTTS(text);
+    if (!cleanedText) {
+        if (liveActive && wsConnected) startListening();
+        return;
+    }
+    
+    currentUtterance = new SpeechSynthesisUtterance(cleanedText);
+    const isAr = detectArabic(cleanedText);
+    
+    let voice = null;
+    if (isAr) {
+        voice = voicesList.find(v => v.lang.startsWith('ar')) || voicesList.find(v => v.lang.includes('AR'));
+        currentUtterance.lang = 'ar-SA';
+    } else {
+        voice = voicesList.find(v => v.lang.startsWith('en')) || voicesList.find(v => v.lang.includes('EN'));
+        currentUtterance.lang = 'en-US';
+    }
+    
+    if (voice) {
+        currentUtterance.voice = voice;
+    }
+    
+    currentUtterance.rate  = 1.0;
+    currentUtterance.pitch = 1.0;
+    
+    currentUtterance.onstart = () => {
+        ttsBar.classList.add('active');
+    };
+    
+    currentUtterance.onend = () => {
+        ttsBar.classList.remove('active');
+        currentUtterance = null;
+        if (liveActive && wsConnected) startListening();
+    };
+    
+    currentUtterance.onerror = (e) => {
+        console.error("TTS speaking error:", e);
+        ttsBar.classList.remove('active');
+        currentUtterance = null;
+        if (liveActive && wsConnected) startListening();
+    };
+    
+    window.speechSynthesis.speak(currentUtterance);
+}
 
-                // Initialize the stream reader loop
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    
-                    // Decode byte chunks to raw string tokens
-                    const token = decoder.decode(value, { stream: true });
-                    assistantBubble.innerText += token;
+function stopTTS() {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+    }
+    ttsBar.classList.remove('active');
+    currentUtterance = null;
+}
 
-                    // Automatically lock scroll to bottom during output generation
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                }
+ttsBtn.addEventListener('click', () => {
+    ttsEnabled = !ttsEnabled;
+    ttsBtn.textContent  = ttsEnabled ? '🔊' : '🔇';
+    ttsBtn.classList.toggle('active-tts', ttsEnabled);
+    ttsStatusEl.textContent = 'TTS: ' + (ttsEnabled ? 'ON - speaks aloud' : 'off - text only');
+    unlockTTS();
+});
 
-            } catch (error) {
-                clearInterval(thoughtInterval);
-                if(thoughtBox) thoughtBox.remove();
-                
-                const errorBubble = appendMessage('OS', '', 'bg-gray-800 border border-gray-700 max-w-2xl');
-                errorBubble.innerHTML = `<span class="text-red-400 font-mono">[Streaming Exception Error]: ${error.message}</span>`;
-            } finally {
-                // Re-enable UI inputs once generation pipeline terminates
-                userInput.disabled = false;
-                sendBtn.disabled = false;
-                if (SpeechRecognition) voiceBtn.disabled = false;
-                userInput.focus();
-            }
+// ─── WebSocket ────────────────────────────────────────────────────────────────
+function connectWS() {
+    if (wsConnected) { disconnectWS(); return; }
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const url   = `${proto}://${location.host}/ws/voice?session_id=${SESSION_ID}`;
+    wsDot.className = 'connecting'; wsStatusEl.textContent = 'Connecting...';
+    wsChannel = new WebSocket(url);
+
+    wsChannel.onopen = () => {
+        wsConnected = true;
+        wsBtn.classList.add('ws-on'); wsBtn.textContent = '🔗';
+        wsDot.className = 'on'; wsLabelEl.textContent = 'WebSocket: live';
+        wsStatusEl.textContent = 'Connected — click mic to start voice session';
+        sysMsg('WebSocket voice channel connected. Click mic to start.', 'success');
+    };
+    wsChannel.onmessage = e => handleWS(JSON.parse(e.data));
+    wsChannel.onerror   = () => { wsDot.className='err'; wsStatusEl.textContent='WS error'; };
+    wsChannel.onclose   = () => {
+        wsConnected = false;
+        wsBtn.classList.remove('ws-on'); wsBtn.textContent='🌐';
+        wsDot.className='off'; wsLabelEl.textContent='WebSocket: off';
+        wsStatusEl.textContent = 'Disconnected';
+        if (liveActive) endLiveSession();
+    };
+}
+
+function disconnectWS() { wsChannel?.close(); }
+wsBtn.addEventListener('click', connectWS);
+
+// ─── Live Voice Session ───────────────────────────────────────────────────────
+micBtn.addEventListener('click', () => {
+    if (!wsConnected) {
+        sysMsg('Connect WebSocket first (click the 🌐 button).', 'error');
+        return;
+    }
+    if (liveActive) { endLiveSession(); return; }
+    openLiveSession();
+});
+
+async function openLiveSession() {
+    liveActive = true;
+    overlay.classList.add('active');
+    micBtn.classList.add('recording');
+    micBtn.textContent = '⏹️';
+    setOrbState('idle');
+    setLiveStatus('Speak now — detecting Arabic & English automatically');
+    liveTranscript.textContent = 'Listening...';
+    liveTranscript.className = 'dim';
+    await startListening();
+}
+
+function endLiveSession() {
+    liveActive = false;
+    overlay.classList.remove('active');
+    micBtn.classList.remove('recording');
+    micBtn.textContent = '🎙️';
+    stopListening();
+    stopTTS();
+    setOrbState('idle');
+    clearSilenceTimer();
+}
+
+// ─── Recording / VAD Loop ─────────────────────────────────────────────────────
+async function startListening() {
+    if (!liveActive) return;
+    stopListening();
+    audioChunks = [];
+    isSpeaking = false;
+    silenceStartTime = null;
+    speechStartTime = null;
+    clearSilenceTimer();
+    silenceBarWrap.classList.remove('visible');
+
+    try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+    } catch(e) {
+        sysMsg('Microphone access denied: ' + e.message, 'error');
+        endLiveSession(); return;
+    }
+
+    const mimeTypes = ['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus','audio/mp4'];
+    const mimeType  = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || '';
+    mediaRecorder = new MediaRecorder(micStream, mimeType ? {mimeType} : {});
+    mediaRecorder.ondataavailable = e => { if(e.data.size>0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = () => {};
+    mediaRecorder.start(100);
+
+    // Set up AnalyserNode for VAD
+    audioCtx  = new (window.AudioContext||window.webkitAudioContext)();
+    analyser  = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    const src = audioCtx.createMediaStreamSource(micStream);
+    src.connect(analyser);
+
+    const dataArr = new Uint8Array(analyser.frequencyBinCount);
+
+    function vadLoop() {
+        if (!liveActive) return;
+        animFrame = requestAnimationFrame(vadLoop);
+        analyser.getByteFrequencyData(dataArr);
+
+        // Energy in low-mid frequencies (speech band)
+        const avg = dataArr.slice(0, 30).reduce((s,v)=>s+v,0) / 30;
+
+        // Waveform visual
+        waveSpans.forEach((span, i) => {
+            span.style.height = Math.max(3, dataArr[i*2] / 5) + 'px';
         });
+        liveWaveform.classList.toggle('speaking', avg > SPEECH_THRESHOLD);
 
-        // Helper function to dynamically construct DOM message components
-        function appendMessage(sender, text, styles) {
-            const wrapper = document.createElement('div');
-            wrapper.className = `flex items-start space-x-3 ${sender === 'User' ? 'justify-end' : ''}`;
-
-            const icon = document.createElement('div');
-            icon.className = `${sender === 'User' ? 'bg-teal-700 order-2 ml-3' : 'bg-gray-700'} text-white p-2 rounded-lg text-xs font-bold shadow-sm`;
-            icon.innerText = sender === 'User' ? 'RX' : 'OS';
-
-            const bubble = document.createElement('div');
-            bubble.className = `${styles} p-4 rounded-xl shadow-sm text-sm leading-relaxed whitespace-pre-wrap`;
-            bubble.innerText = text;
-
-            wrapper.appendChild(icon);
-            wrapper.appendChild(bubble);
-            chatContainer.appendChild(wrapper);
-            
-            chatContainer.scrollTop = chatContainer.scrollHeight;
-            return bubble;
+        if (avg > SPEECH_THRESHOLD) {
+            // ── Speech detected ──
+            if (!isSpeaking) {
+                isSpeaking       = true;
+                speechStartTime  = speechStartTime || Date.now(); // preserve original start
+                setOrbState('speaking');
+                liveTranscript.className   = '';
+                liveTranscript.textContent = '...';
+                setLiveStatus('Listening...');
+            }
+            // If speech resumes mid-countdown, cancel the silence timer
+            if (silenceTimer) {
+                clearSilenceTimer();
+                silenceStartTime = null;
+                silenceBarWrap.classList.remove('visible');
+            }
+        } else {
+            // ── Silence ──
+            if (isSpeaking && !silenceTimer) {
+                silenceStartTime = Date.now();
+                silenceBarWrap.classList.add('visible');
+                setOrbState('idle');
+                startSilenceCountdown();
+            }
         }
-    </script>
+    }
+    vadLoop();
+
+    setLiveStatus('Speak now — Arabic or English');
+}
+
+function stopListening() {
+    if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    if (micStream) { micStream.getTracks().forEach(t=>t.stop()); micStream = null; }
+    mediaRecorder = null;
+    clearSilenceTimer();
+    isSpeaking = false;
+}
+
+// ─── Silence countdown ────────────────────────────────────────────────────────
+function clearSilenceTimer() {
+    if (silenceTimer) { clearInterval(silenceTimer); silenceTimer = null; }
+    silenceProgress = 0;
+    silenceBar.style.width = '0%';
+}
+
+function startSilenceCountdown() {
+    const start       = Date.now();
+    const speechTotal = speechStartTime ? (silenceStartTime || Date.now()) - speechStartTime : 0;
+    silenceTimer = setInterval(() => {
+        if (!liveActive) { clearSilenceTimer(); return; }
+        const elapsed = Date.now() - start;
+        const pct     = Math.min(100, (elapsed / SILENCE_DURATION_MS) * 100);
+        silenceBar.style.width = pct + '%';
+        const remaining = ((SILENCE_DURATION_MS - elapsed) / 1000).toFixed(1);
+        setLiveStatus('Sending in ' + remaining + 's — keep talking to continue');
+        if (elapsed >= SILENCE_DURATION_MS) {
+            clearSilenceTimer();
+            silenceBarWrap.classList.remove('visible');
+            if (speechTotal >= MIN_SPEECH_MS && audioChunks.length > 0) {
+                sendVoiceToWS();
+            } else {
+                // Not enough speech — reset and keep listening
+                audioChunks   = [];
+                isSpeaking    = false;
+                silenceBarWrap.classList.remove('visible');
+                liveTranscript.textContent = 'Listening...';
+                liveTranscript.className   = 'dim';
+                setLiveStatus('Speak longer — keep talking until finished');
+                if (liveActive) setTimeout(() => startListening(), 400);
+            }
+        }
+    }, 80);
+}
+
+// ─── Send audio via WebSocket ─────────────────────────────────────────────────
+async function sendVoiceToWS() {
+    if (!wsConnected || !wsChannel || audioChunks.length === 0) return;
+
+    stopListening();  // stop mic while we process
+    setOrbState('processing');
+    liveTranscript.textContent = 'Transcribing...';
+    liveTranscript.className = 'dim';
+    setLiveStatus('Sending to Groq Whisper...');
+    silenceBarWrap.classList.remove('visible');
+
+    const mimeType = mediaRecorder?.mimeType || 'audio/webm';
+    const ext = mimeType.includes('mp4') ? 'mp4' : mimeType.includes('ogg') ? 'ogg' : 'webm';
+    const blob = new Blob(audioChunks, { type: mimeType });
+    audioChunks = [];
+
+    try {
+        const buf  = await blob.arrayBuffer();
+        const u8   = new Uint8Array(buf);
+        // Convert to base64 in chunks to avoid stack overflow
+        let binary = '';
+        const chunk = 8192;
+        for (let i = 0; i < u8.length; i += chunk) {
+            binary += String.fromCharCode(...u8.subarray(i, i + chunk));
+        }
+        const b64 = btoa(binary);
+        wsChannel.send(JSON.stringify({ type: 'audio_chunk', data: b64, format: ext }));
+        wsChannel.send(JSON.stringify({ type: 'audio_end', format: ext }));
+    } catch(e) {
+        sysMsg('Send failed: ' + e.message, 'error');
+        setLiveStatus('Error — try again');
+        if (liveActive) startListening();
+    }
+}
+
+// ─── Handle WS messages ───────────────────────────────────────────────────────
+function handleWS(msg) {
+    switch(msg.type) {
+
+        case 'transcript': {
+            const txt = msg.text || '';
+            if (!txt.trim()) {
+                // Nothing heard, go back to listening
+                setLiveStatus('Nothing heard — speak again');
+                liveTranscript.textContent = 'Listening...';
+                liveTranscript.className = 'dim';
+                if (liveActive) setTimeout(()=>startListening(), 800);
+                return;
+            }
+            // Detect Arabic for RTL display
+            const isAr = detectArabic(txt);
+            liveTranscript.textContent = txt;
+            liveTranscript.className = isAr ? 'arabic' : '';
+            setLiveStatus('Thinking...');
+            setOrbState('answering');
+            // Also add to chat
+            appendMsg('user', txt);
+            currentAIBubble = appendMsg('ai','');
+            currentAIBubble.classList.add('streaming');
+            fullAIReply = '';
+            aiStreaming  = true;
+            break;
+        }
+
+        case 'ai_token': {
+            const tok = msg.token || '';
+            fullAIReply += tok;
+            if (currentAIBubble) {
+                currentAIBubble.textContent = fullAIReply;
+                chatEl.scrollTop = chatEl.scrollHeight;
+            }
+            break;
+        }
+
+        case 'ai_done': {
+            aiStreaming = false;
+            if (currentAIBubble) currentAIBubble.classList.remove('streaming');
+            setOrbState('idle');
+
+            if (ttsEnabled && fullAIReply) {
+                liveTranscript.textContent = 'Speaking...';
+                liveTranscript.className   = 'dim';
+                setLiveStatus('AI is responding via TTS...');
+                speakText(fullAIReply);
+                // speakText's onend will re-trigger startListening
+            } else {
+                liveTranscript.textContent = 'Listening...';
+                liveTranscript.className   = 'dim';
+                setLiveStatus('Speak again — Arabic or English');
+                if (liveActive) setTimeout(()=>startListening(), 600);
+            }
+            currentAIBubble = null;
+            fullAIReply     = '';
+            break;
+        }
+
+        case 'interrupted': {
+            aiStreaming = false;
+            stopTTS();
+            if (currentAIBubble) {
+                currentAIBubble.classList.remove('streaming');
+                currentAIBubble.textContent += ' [stopped]';
+            }
+            currentAIBubble = null;
+            fullAIReply     = '';
+            setOrbState('idle');
+            liveTranscript.textContent = 'Listening...';
+            liveTranscript.className   = 'dim';
+            setLiveStatus('Interrupted — speak again');
+            if (liveActive) setTimeout(()=>startListening(), 400);
+            break;
+        }
+
+        case 'error': {
+            sysMsg('Error: ' + msg.message, 'error');
+            setLiveStatus('Error — speak again');
+            liveTranscript.textContent = 'Listening...';
+            liveTranscript.className   = 'dim';
+            if (liveActive) setTimeout(()=>startListening(), 1000);
+            break;
+        }
+    }
+}
+
+// Click orb to interrupt
+orbCore.addEventListener('click', () => {
+    if (aiStreaming && wsConnected) {
+        wsChannel.send(JSON.stringify({type:'interrupt'}));
+        stopTTS();
+    }
+});
+
+// ─── Text submission (type mode) ──────────────────────────────────────────────
+sendBtn.addEventListener('click', submitText);
+userInputEl.addEventListener('keydown', e => { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();submitText();} });
+
+async function submitText() {
+    const text = userInputEl.value.trim();
+    if (!text) return;
+    userInputEl.value = '';
+    stopTTS();
+    userInputEl.disabled = true;
+    sendBtn.disabled     = true;
+    appendMsg('user', text);
+
+    const box = document.createElement('div');
+    box.className = 'message-row ai';
+    const bInner = document.createElement('div');
+    bInner.className = 'thought-box';
+    bInner.innerHTML = '<div class="th-head">Kernel Processing</div>';
+    const avEl = document.createElement('div'); avEl.className='avatar ai'; avEl.textContent='OS';
+    box.appendChild(avEl); box.appendChild(bInner);
+    chatEl.appendChild(box); chatEl.scrollTop = chatEl.scrollHeight;
+
+    let ti=0;
+    const iv = setInterval(()=>{
+        if(ti<THOUGHTS.length){
+            const d=document.createElement('div'); d.className='thought-line'; d.textContent=THOUGHTS[ti++];
+            bInner.appendChild(d); chatEl.scrollTop=chatEl.scrollHeight;
+        }
+    },900);
+
+    try {
+        const res = await fetch('/orchestrate',{
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({session_id:SESSION_ID,user_id:USER_ID,text_input:text})
+        });
+        clearInterval(iv); box.remove();
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        const bub = appendMsg('ai','');
+        bub.classList.add('streaming');
+        let full='';
+        const rdr=res.body.getReader(), dec=new TextDecoder();
+        while(true){
+            const{value,done}=await rdr.read(); if(done)break;
+            const tok=dec.decode(value,{stream:true}); full+=tok;
+            bub.textContent=full; chatEl.scrollTop=chatEl.scrollHeight;
+        }
+        bub.classList.remove('streaming');
+        if(full) speakText(full);
+    } catch(e) {
+        clearInterval(iv); box.remove();
+        appendMsg('ai','[Error]: '+e.message,'error');
+    } finally {
+        userInputEl.disabled=false; sendBtn.disabled=false; userInputEl.focus();
+    }
+}
+
+// ─── HTTP mic fallback (if WS not connected) ─────────────────────────────────
+// This is handled by checking wsConnected in mic button click above
+// If WS not connected, we show an error. User can still type.
+</script>
 </body>
 </html>
