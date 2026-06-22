@@ -1,7 +1,7 @@
 ---
 title: Scientific Operating System
 emoji: 🧬
-colorFrom: teal
+colorFrom: indigo
 colorTo: gray
 sdk: docker
 app_port: 7860
