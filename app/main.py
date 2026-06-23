@@ -144,6 +144,10 @@ from fastapi.responses import JSONResponse
 
 class ReadinessMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        # Allow root path (UI & health check) to load immediately
+        if request.url.path == "/":
+            return await call_next(request)
+            
         if not rag_state["ready"]:
             return JSONResponse(
                 status_code=503, 
