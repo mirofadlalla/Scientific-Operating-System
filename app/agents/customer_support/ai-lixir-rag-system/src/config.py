@@ -15,6 +15,7 @@ try:
     WEAVIATE_HOST      = getattr(app_settings, "WEAVIATE_HOST", "localhost")
     WEAVIATE_PORT      = getattr(app_settings, "WEAVIATE_PORT", 8080)
     WEAVIATE_GRPC_PORT = getattr(app_settings, "WEAVIATE_GRPC_PORT", 50051)
+    EMBED_MODEL        = getattr(app_settings, "GROQ_EMBEDDING_MODEL", "nomic-embed-text-v1_5")
 except ImportError:
     # Standalone mode (e.g., running main.py directly)
     from pydantic_settings import BaseSettings
@@ -26,6 +27,7 @@ except ImportError:
         WEAVIATE_HOST:      str = os.getenv("WEAVIATE_HOST", "localhost")
         WEAVIATE_PORT:      int = int(os.getenv("WEAVIATE_PORT", "8080"))
         WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))
+        GROQ_EMBEDDING_MODEL: str = os.getenv("GROQ_EMBEDDING_MODEL", "nomic-embed-text-v1_5")
 
         class Config:
             env_file = ".env"
@@ -37,14 +39,13 @@ except ImportError:
     WEAVIATE_HOST      = _standalone.WEAVIATE_HOST
     WEAVIATE_PORT      = _standalone.WEAVIATE_PORT
     WEAVIATE_GRPC_PORT = _standalone.WEAVIATE_GRPC_PORT
+    EMBED_MODEL        = _standalone.GROQ_EMBEDDING_MODEL
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Embedding model constants
 # ─────────────────────────────────────────────────────────────────────────────
-# Using text-embedding-3-small via OpenAI-compatible endpoint (valid for OpenAIEmbedding)
-EMBED_MODEL = "text-embedding-3-small"  # 1536-dim, supported by OpenAIEmbedding
-EMBED_DIM   = 1536
+EMBED_DIM   = 1536  # Kept for reference, may vary based on model
 
 
 def setup_groq_environment() -> None:
