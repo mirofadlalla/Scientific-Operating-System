@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     # Groq Whisper model for STT (no OpenAI key needed)
     GROQ_WHISPER_MODEL: str = "whisper-large-v3-turbo"
+    
+    GROQ_EMBEDDING_MODEL: str = "bge-large-en-v1.5"
 
     # Optional: OpenAI for high-quality TTS (alloy, nova, shimmer…)
     # If not set, the browser's SpeechSynthesis API is used instead
