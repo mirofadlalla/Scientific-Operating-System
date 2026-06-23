@@ -48,4 +48,11 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # Embedding model constants
 # ─────────────────────────────────────────────────────────────────────────────
-EMBED_DIM   = 1024  # Kept for reference, may vary based on model
+# Embedding dimensions per provider
+# groq/llama-text-embed-v2  → 2048
+# huggingface/bge-m3         → 1024
+# huggingface/MiniLM-L12-v2  → 384
+EMBED_DIM   = 2048 if EMBEDDING_PROVIDER == "groq" else (
+              1024 if "bge-m3" in EMBED_MODEL else
+              384
+)
