@@ -4,7 +4,9 @@ import traceback
 import re
 import math
 import struct
-from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
+import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect, Form
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -15,12 +17,27 @@ import os
 from app.config import settings
 from app.agents.chemical.agent import ChemicalAgent
 from app.agents.medical.agent import MedicalAgent
+from app.agents.customer_support.agent import CustomerSupportRAGAgent
 from app.orchestrator.brain import OrchestratorBrain
 from app.memory.short_term import ShortTermMemory
 from app.memory.long_term import LongTermMemory
 from app.audio import audio_processor
 
-app = FastAPI(title="AI Scientific OS — Voice Core")
+logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# App Lifespan — startup / shutdown hooks
+# ──────────────────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Warm-up & teardown hook for long-lived resources."""
+    # Startup: pre-initialise the RAG engine in the background
+    asyncio.create_task(rag_agent._initialise())
+    yield
+    # Shutdown: release Weaviate connection
+    await rag_agent.close()
+
+app = FastAPI(title="AI Scientific OS — Voice Core", lifespan=lifespan)
 
 client = AsyncOpenAI(
     base_url=settings.GROQ_BASE_URL,
@@ -29,12 +46,13 @@ client = AsyncOpenAI(
 
 # Initialize expert agents and infrastructure singletons
 chemical_agent = ChemicalAgent()
-medical_agent = MedicalAgent()
+medical_agent  = MedicalAgent()
+rag_agent      = CustomerSupportRAGAgent()   # AI-lixir docs RAG agent
 
 # Orchestrator + Memory
 orchestrator = OrchestratorBrain()
 short_memory = ShortTermMemory()
-long_memory = LongTermMemory()
+long_memory  = LongTermMemory()
 SESSION_MEMORY: Dict[str, List[Dict[str, str]]] = {}
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -109,25 +127,25 @@ def should_skip_orchestrator(text: str) -> bool:
 
 
 ORCHESTRATOR_SYSTEM_PROMPT = """
-You are the central brain (Orchestrator) of an AI Scientific OS specializing in Drug Discovery.
-Analyze the user's input, extract entities, and route the query to the correct expert agent using STRICT intents.
+You are the central brain (Orchestrator) of an AI Scientific OS specialising in Drug Discovery.
+Analyse the user's input, extract entities, and route the query to the correct expert agent.
 
-Available Target Agents:
-1. CHEMICAL_AGENT: For tasks involving chemical structures, screening, and properties.
-2. MEDICAL_AGENT: For tasks requiring deep biological pathways or clinical reasoning.
-3. APP_AGENT: For general application help.
-
-You MUST choose exactly ONE of the following STRICT Intents:
-- "CHEMICAL_SIMILARITY": Search for similar compounds using FAISS/SMILES.
-- "ADMET_ANALYSIS": Predict absorption, distribution, metabolism, excretion, and toxicity.
-- "DRUG_REPURPOSING": Virtual screening pipeline for a disease to find drug candidates.
-- "BIOMEDICAL_MECHANISM": Deep dive into biological pathways, targets, and mechanisms of action.
-- "APP_HELP": General application support.
+Available Target Agents and their STRICT Intents:
+1. CHEMICAL_AGENT  → CHEMICAL_SIMILARITY | ADMET_ANALYSIS | DRUG_REPURPOSING
+   Use for: chemical structures, SMILES, ADMET predictions, molecular similarity, virtual screening.
+2. MEDICAL_AGENT   → BIOMEDICAL_MECHANISM
+   Use for: biological pathways, drug-target interactions, clinical reasoning, pharmacology.
+3. RAG_AGENT       → APP_SUPPORT_RAG
+   Use for: questions about AI-lixir platform features, service documentation, API endpoints,
+   how-to guides, system overview, ADMET service docs, generation service docs, or any question
+   that should be answered from the system documentation knowledge base.
+4. APP_AGENT       → APP_HELP
+   Use for: casual greetings, general assistant questions, unrelated support.
 
 You MUST respond ONLY with a raw JSON object containing exactly these fields:
 {
-  "intent": "CHEMICAL_SIMILARITY" | "ADMET_ANALYSIS" | "DRUG_REPURPOSING" | "BIOMEDICAL_MECHANISM" | "APP_HELP",
-  "target_agent": "CHEMICAL_AGENT" | "MEDICAL_AGENT" | "APP_AGENT",
+  "intent": "CHEMICAL_SIMILARITY" | "ADMET_ANALYSIS" | "DRUG_REPURPOSING" | "BIOMEDICAL_MECHANISM" | "APP_SUPPORT_RAG" | "APP_HELP",
+  "target_agent": "CHEMICAL_AGENT" | "MEDICAL_AGENT" | "RAG_AGENT" | "APP_AGENT",
   "entities": {"compound": "name if any", "smiles": "SMILES string if any", "disease": "name if any"}
 }
 """
@@ -282,7 +300,15 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
         task_mapping.append("MEDICAL")
 
     chemical_output = ""
-    medical_output = ""
+    medical_output  = ""
+    rag_output      = ""
+
+    # ── RAG agent for documentation / app-support queries ────────────────────
+    if intent == "APP_SUPPORT_RAG" or target_agent == "RAG_AGENT":
+        try:
+            rag_output = await rag_agent.run(text_input)
+        except Exception as exc:
+            rag_output = f"[RAG Agent Error]: {exc}"
 
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -297,6 +323,19 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
                     chemical_output = str(res)
                 else:
                     medical_output = str(res)
+
+    # ── Build synthesis context ──────────────────────────────────────────────
+    if rag_output:
+        # RAG answers are already grounded — stream them directly without re-synthesis
+        for word in rag_output.split(" "):
+            yield word + " "
+            await asyncio.sleep(0.008)
+        short_memory.add_message(session_id, "user", text_input)
+        short_memory.add_message(session_id, "assistant", rag_output)
+        SESSION_MEMORY.setdefault(session_id, []).append({"role": "user", "content": text_input})
+        SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": rag_output})
+        long_memory.add_entry(session_id, rag_output, metadata={"intent": intent, "agent": "RAG_AGENT"})
+        return
 
     if chemical_output or medical_output:
         agent_raw_output = f"[Chem Data]: {chemical_output}\n[Bio Data]: {medical_output}".strip()
@@ -340,6 +379,95 @@ async def get_web_ui():
     html_path = os.path.join(os.path.dirname(__file__), "index.html")
     with open(html_path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# RAG Knowledge Base Endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+
+class RAGIngestRequest(BaseModel):
+    strategy: str = "markdown"   # markdown | sentence | token
+    chunk_size: int = 512
+    chunk_overlap: int = 20
+
+
+@app.post("/rag/ingest")
+async def rag_ingest(
+    file: UploadFile = File(...),
+    strategy: str    = Form(default="markdown"),
+):
+    """
+    Upload a Markdown (.md) file and ingest it into the Weaviate knowledge base.
+
+    - **file**: The markdown file to ingest.
+    - **strategy**: Chunking strategy — 'markdown' (default), 'sentence', or 'token'.
+
+    Returns ingestion stats: nodes created, strategy used, index name.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided.")
+
+    allowed_ext = {".md", ".txt"}
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in allowed_ext:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Only {allowed_ext} are accepted."
+        )
+
+    try:
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+        ingestion_svc = rag_agent.get_ingestion_service()
+
+        # Run blocking ingestion in a thread pool to avoid blocking the event loop
+        loop   = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: ingestion_svc.ingest_bytes(
+                filename=file.filename,
+                content=content,
+                strategy=strategy,
+            )
+        )
+
+        if result.get("status") == "error":
+            raise HTTPException(status_code=500, detail=result.get("message", "Ingestion failed."))
+
+        # Reload the RAG query engine so new nodes are immediately queryable
+        asyncio.create_task(rag_agent.reload_engine())
+
+        return {
+            "status":        "success",
+            "filename":      file.filename,
+            "strategy":      result.get("strategy"),
+            "nodes_created": result.get("nodes_created"),
+            "index_name":    result.get("index_name"),
+            "files":         result.get("files"),
+            "message":       "Document ingested successfully. Knowledge base is reloading.",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"[/rag/ingest] Unexpected error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Ingestion error: {exc}")
+
+
+@app.get("/rag/status")
+async def rag_status():
+    """
+    Check the health of the RAG knowledge base.
+    Returns Weaviate connectivity, index name, node count, and engine readiness.
+    """
+    try:
+        status = await rag_agent.status()
+        return status
+    except Exception as exc:
+        logger.error(f"[/rag/status] Error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Status check failed: {exc}")
 
 
 @app.post("/orchestrate")

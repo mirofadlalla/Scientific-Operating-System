@@ -318,6 +318,148 @@
         .tts-waves span:nth-child(4){animation-delay:.45s}
         @keyframes tw { 0%,100%{height:3px} 50%{height:14px} }
 
+        /* ── Knowledge Base Panel ── */
+        #kb-panel {
+            position: fixed;
+            bottom: 0; right: 24px;
+            width: 380px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-bottom: none;
+            border-radius: 16px 16px 0 0;
+            box-shadow: 0 -8px 40px rgba(0,0,0,0.4);
+            z-index: 200;
+            transform: translateY(calc(100% - 52px));
+            transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        #kb-panel.open { transform: translateY(0); }
+
+        #kb-toggle {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 18px;
+            cursor: pointer;
+            user-select: none;
+            border-radius: 16px 16px 0 0;
+        }
+        #kb-toggle:hover { background: rgba(62,207,207,0.04); }
+        .kb-title {
+            display: flex; align-items: center; gap: 10px;
+            font-size: 13px; font-weight: 600; color: var(--text-prim);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .kb-status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: var(--text-muted);
+            transition: background 0.4s, box-shadow 0.4s;
+            flex-shrink: 0;
+        }
+        .kb-status-dot.online  { background: var(--green); box-shadow: 0 0 8px rgba(34,197,94,0.6); }
+        .kb-status-dot.offline { background: var(--red); }
+        .kb-status-dot.loading { background: var(--accent3); animation: pulse-dot 1s infinite; }
+        .kb-chevron { font-size: 12px; color: var(--text-sec); transition: transform 0.3s; }
+        #kb-panel.open .kb-chevron { transform: rotate(180deg); }
+
+        #kb-body { padding: 0 18px 20px; border-top: 1px solid var(--border); }
+
+        /* Stat row */
+        .kb-stats {
+            display: flex; gap: 10px; margin: 14px 0 16px;
+        }
+        .kb-stat {
+            flex: 1; background: rgba(255,255,255,0.03);
+            border: 1px solid var(--border);
+            border-radius: 10px; padding: 10px;
+            text-align: center;
+        }
+        .kb-stat .val { font-size: 20px; font-weight: 700; color: var(--accent); font-family: 'JetBrains Mono',monospace; }
+        .kb-stat .lbl { font-size: 10px; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+        /* Drop zone */
+        #kb-dropzone {
+            border: 2px dashed rgba(62,207,207,0.25);
+            border-radius: 12px;
+            padding: 22px 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.25s;
+            background: rgba(62,207,207,0.02);
+            position: relative;
+        }
+        #kb-dropzone:hover, #kb-dropzone.drag-over {
+            border-color: var(--accent);
+            background: rgba(62,207,207,0.06);
+        }
+        #kb-dropzone .dz-icon { font-size: 28px; margin-bottom: 8px; }
+        #kb-dropzone .dz-label { font-size: 13px; color: var(--text-sec); line-height: 1.6; }
+        #kb-dropzone .dz-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+        #kb-file-input { display: none; }
+
+        /* Strategy selector */
+        .kb-controls {
+            display: flex; align-items: center; gap: 10px; margin-top: 12px;
+        }
+        #kb-strategy {
+            flex: 1; background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 10px; padding: 9px 12px;
+            font-size: 12px; color: var(--text-prim); font-family: 'JetBrains Mono', monospace;
+            outline: none; cursor: pointer;
+        }
+        #kb-strategy:focus { border-color: rgba(62,207,207,0.4); }
+
+        #kb-upload-btn {
+            padding: 9px 18px; border-radius: 10px; border: none;
+            background: linear-gradient(135deg, #3ecfcf, #6366f1);
+            color: #fff; font-size: 12px; font-weight: 600;
+            cursor: pointer; transition: opacity 0.2s, transform 0.1s;
+            white-space: nowrap; flex-shrink: 0;
+        }
+        #kb-upload-btn:hover  { opacity: 0.88; transform: translateY(-1px); }
+        #kb-upload-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+        /* Progress card */
+        #kb-progress {
+            display: none; margin-top: 12px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid var(--border);
+            border-radius: 10px; padding: 12px 14px;
+            font-size: 12px; font-family: 'JetBrains Mono', monospace;
+        }
+        #kb-progress.visible { display: block; }
+        .kb-step {
+            display: flex; align-items: center; gap: 8px;
+            margin: 5px 0; color: var(--text-muted);
+            transition: color 0.3s;
+        }
+        .kb-step.active  { color: var(--accent3); }
+        .kb-step.done    { color: var(--green); }
+        .kb-step.error   { color: var(--red); }
+        .kb-step-icon { width: 16px; text-align: center; flex-shrink: 0; }
+        .kb-step-spinner { animation: spin-ring 1s linear infinite; display: inline-block; }
+        @keyframes spin-ring { to { transform: rotate(360deg); } }
+
+        /* Selected file name */
+        #kb-selected-file {
+            display: none; margin-top: 10px;
+            background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2);
+            border-radius: 8px; padding: 8px 12px;
+            font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--accent2);
+        }
+
+        /* Header RAG badge */
+        .rag-badge {
+            display: flex; align-items: center; gap: 6px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid var(--border);
+            border-radius: 20px; padding: 5px 12px;
+            font-size: 11px; font-family: 'JetBrains Mono',monospace; color: var(--text-sec);
+            cursor: pointer;
+            transition: border-color 0.3s, background 0.3s;
+        }
+        .rag-badge:hover { border-color: rgba(62,207,207,0.35); background: rgba(62,207,207,0.05); }
+        .rag-badge .rag-dot { width:6px; height:6px; border-radius:50%; background:var(--text-muted); transition: background 0.4s; }
+        .rag-badge.rag-online  .rag-dot { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.6); }
+        .rag-badge.rag-offline .rag-dot { background: var(--red); }
+
         * { scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
     </style>
 </head>
@@ -335,6 +477,10 @@
     <div class="header-badges">
         <div class="badge"><span class="dot"></span><span id="ws-label">WebSocket: off</span></div>
         <div class="badge"><span>⚡</span><span>Groq &middot; Whisper-v3-turbo</span></div>
+        <div class="rag-badge rag-offline" id="rag-header-badge" title="Click to open Knowledge Base" onclick="toggleKBPanel()">
+            <span class="rag-dot"></span>
+            <span id="rag-header-label">RAG: checking...</span>
+        </div>
     </div>
 </header>
 
@@ -407,6 +553,67 @@ Welcome, Professor.
 </div>
 
 <audio id="audio-player" style="display:none"></audio>
+
+<!-- ── KNOWLEDGE BASE PANEL ───────────────────────────────────────────────── -->
+<div id="kb-panel">
+    <div id="kb-toggle" onclick="toggleKBPanel()">
+        <div class="kb-title">
+            <span class="kb-status-dot loading" id="kb-dot"></span>
+            🗄️ Knowledge Base
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+            <span id="kb-node-badge" style="font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace">– nodes</span>
+            <span class="kb-chevron">▲</span>
+        </div>
+    </div>
+    <div id="kb-body">
+        <!-- Stats row -->
+        <div class="kb-stats">
+            <div class="kb-stat">
+                <div class="val" id="kb-stat-nodes">–</div>
+                <div class="lbl">Indexed Nodes</div>
+            </div>
+            <div class="kb-stat">
+                <div class="val" id="kb-stat-engine">–</div>
+                <div class="lbl">Engine</div>
+            </div>
+            <div class="kb-stat">
+                <div class="val" id="kb-stat-mode">–</div>
+                <div class="lbl">Search Mode</div>
+            </div>
+        </div>
+
+        <!-- Drop zone -->
+        <div id="kb-dropzone" onclick="document.getElementById('kb-file-input').click()">
+            <div class="dz-icon">📄</div>
+            <div class="dz-label">Drop a <strong>.md</strong> or <strong>.txt</strong> file here<br>or click to browse</div>
+            <div class="dz-sub">Markdown API docs, service guides, etc.</div>
+        </div>
+        <input type="file" id="kb-file-input" accept=".md,.txt">
+
+        <!-- Selected file -->
+        <div id="kb-selected-file" id="kb-file-name">📄 <span id="kb-fname-text"></span></div>
+
+        <!-- Strategy + upload -->
+        <div class="kb-controls">
+            <select id="kb-strategy">
+                <option value="markdown" selected>🔖 Markdown (headers)</option>
+                <option value="sentence">📝 Sentence splitter</option>
+                <option value="token">🔢 Token splitter</option>
+            </select>
+            <button id="kb-upload-btn" onclick="kbUpload()">⬆ Ingest</button>
+        </div>
+
+        <!-- Progress steps -->
+        <div id="kb-progress">
+            <div class="kb-step" id="kb-step-upload"><span class="kb-step-icon">○</span> Reading file</div>
+            <div class="kb-step" id="kb-step-chunk"><span class="kb-step-icon">○</span> Chunking document</div>
+            <div class="kb-step" id="kb-step-embed"><span class="kb-step-icon">○</span> Generating embeddings (Groq)</div>
+            <div class="kb-step" id="kb-step-index"><span class="kb-step-icon">○</span> Storing in Weaviate</div>
+            <div class="kb-step" id="kb-step-reload"><span class="kb-step-icon">○</span> Reloading query engine</div>
+        </div>
+    </div>
+</div>
 
 <script>
 'use strict';
@@ -1053,6 +1260,187 @@ async function submitText() {
 // ─── HTTP mic fallback (if WS not connected) ─────────────────────────────────
 // This is handled by checking wsConnected in mic button click above
 // If WS not connected, we show an error. User can still type.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Knowledge Base Panel — JavaScript
+// ─────────────────────────────────────────────────────────────────────────────
+let kbPanelOpen    = false;
+let kbSelectedFile = null;
+
+// DOM refs
+const kbPanel       = document.getElementById('kb-panel');
+const kbDot         = document.getElementById('kb-dot');
+const kbNodeBadge   = document.getElementById('kb-node-badge');
+const kbStatNodes   = document.getElementById('kb-stat-nodes');
+const kbStatEngine  = document.getElementById('kb-stat-engine');
+const kbStatMode    = document.getElementById('kb-stat-mode');
+const kbDropzone    = document.getElementById('kb-dropzone');
+const kbFileInput   = document.getElementById('kb-file-input');
+const kbSelectedDiv = document.getElementById('kb-selected-file');
+const kbFnameText   = document.getElementById('kb-fname-text');
+const kbUploadBtn   = document.getElementById('kb-upload-btn');
+const kbProgress    = document.getElementById('kb-progress');
+const ragBadge      = document.getElementById('rag-header-badge');
+const ragLabel      = document.getElementById('rag-header-label');
+
+const kbSteps = {
+    upload: document.getElementById('kb-step-upload'),
+    chunk:  document.getElementById('kb-step-chunk'),
+    embed:  document.getElementById('kb-step-embed'),
+    index:  document.getElementById('kb-step-index'),
+    reload: document.getElementById('kb-step-reload'),
+};
+
+function toggleKBPanel() {
+    kbPanelOpen = !kbPanelOpen;
+    kbPanel.classList.toggle('open', kbPanelOpen);
+}
+
+// ── Drag & drop ───────────────────────────────────────────────────────────────
+kbDropzone.addEventListener('dragover', e => { e.preventDefault(); kbDropzone.classList.add('drag-over'); });
+kbDropzone.addEventListener('dragleave', () => kbDropzone.classList.remove('drag-over'));
+kbDropzone.addEventListener('drop', e => {
+    e.preventDefault();
+    kbDropzone.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f) selectKBFile(f);
+});
+
+kbFileInput.addEventListener('change', () => {
+    if (kbFileInput.files[0]) selectKBFile(kbFileInput.files[0]);
+});
+
+function selectKBFile(file) {
+    kbSelectedFile = file;
+    kbFnameText.textContent = file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+    kbSelectedDiv.style.display = 'block';
+    resetSteps();
+    kbProgress.classList.remove('visible');
+}
+
+// ── Step helpers ──────────────────────────────────────────────────────────────
+function resetSteps() {
+    Object.values(kbSteps).forEach(el => {
+        el.className = 'kb-step';
+        el.querySelector('.kb-step-icon').textContent = '○';
+    });
+}
+
+function setStep(key, state) {
+    // state: 'active' | 'done' | 'error'
+    const el   = kbSteps[key];
+    const icon = el.querySelector('.kb-step-icon');
+    el.className = 'kb-step ' + state;
+    if (state === 'active')  icon.innerHTML = '<span class="kb-step-spinner">⟳</span>';
+    else if (state === 'done')  icon.textContent = '✓';
+    else if (state === 'error') icon.textContent = '✗';
+}
+
+// ── Upload logic ──────────────────────────────────────────────────────────────
+async function kbUpload() {
+    if (!kbSelectedFile) {
+        alert('Please select a file first (drag & drop or click the area above).');
+        return;
+    }
+
+    const strategy = document.getElementById('kb-strategy').value;
+    kbUploadBtn.disabled = true;
+    kbProgress.classList.add('visible');
+    resetSteps();
+
+    // Step 1: Upload
+    setStep('upload', 'active');
+    await sleep(300);
+
+    const form = new FormData();
+    form.append('file', kbSelectedFile, kbSelectedFile.name);
+    form.append('strategy', strategy);
+
+    let result;
+    try {
+        setStep('upload', 'done');
+        setStep('chunk',  'active');
+        await sleep(400);
+        setStep('chunk',  'done');
+        setStep('embed',  'active');
+
+        const res = await fetch('/rag/ingest', { method: 'POST', body: form });
+        result = await res.json();
+
+        if (!res.ok || result.status === 'error') {
+            throw new Error(result.detail || result.message || 'Ingestion failed');
+        }
+
+        setStep('embed',  'done');
+        setStep('index',  'active');
+        await sleep(300);
+        setStep('index',  'done');
+        setStep('reload', 'active');
+        await sleep(600);   // give reload_engine a moment
+        setStep('reload', 'done');
+
+        // Show success in chat
+        appendMsg('ai',
+            `✅ Knowledge Base updated!\n` +
+            `📄 File: ${result.filename}\n` +
+            `🔗 Strategy: ${result.strategy}\n` +
+            `📦 Nodes indexed: ${result.nodes_created}\n` +
+            `🗄️ Index: ${result.index_name}`,
+            'success'
+        );
+
+        // Refresh status badge
+        await pollRAGStatus();
+
+    } catch (err) {
+        setStep('embed',  'error');
+        appendMsg('ai', `❌ Ingestion failed: ${err.message}`, 'error');
+    } finally {
+        kbUploadBtn.disabled = false;
+        kbSelectedFile = null;
+        kbFileInput.value = '';
+        kbSelectedDiv.style.display = 'none';
+    }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── RAG Status polling ────────────────────────────────────────────────────────
+async function pollRAGStatus() {
+    try {
+        const res  = await fetch('/rag/status');
+        const data = await res.json();
+
+        const online = data.weaviate_connected === true;
+        const nodes  = typeof data.node_count === 'number' && data.node_count >= 0
+                         ? data.node_count : '–';
+        const ready  = data.engine_ready === true;
+
+        // Update header badge
+        ragBadge.className = 'rag-badge ' + (online ? 'rag-online' : 'rag-offline');
+        ragLabel.textContent = online
+            ? `RAG: ${ready ? 'ready' : 'indexing'} · ${nodes} nodes`
+            : 'RAG: offline';
+
+        // Update KB panel
+        const dotCls = !online ? 'offline' : ready ? 'online' : 'loading';
+        kbDot.className = 'kb-status-dot ' + dotCls;
+        kbNodeBadge.textContent = nodes + ' nodes';
+        kbStatNodes.textContent  = nodes;
+        kbStatEngine.textContent = ready ? '✅' : (online ? '…' : '❌');
+        kbStatMode.textContent   = data.search_mode ? data.search_mode.split(' ')[0] : '–';
+
+    } catch (e) {
+        ragBadge.className = 'rag-badge rag-offline';
+        ragLabel.textContent = 'RAG: offline';
+        kbDot.className = 'kb-status-dot offline';
+        kbNodeBadge.textContent = '– nodes';
+    }
+}
+
+// Poll on page load, then every 30 seconds
+pollRAGStatus();
+setInterval(pollRAGStatus, 30_000);
 </script>
 </body>
 </html>
