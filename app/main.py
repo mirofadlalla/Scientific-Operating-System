@@ -81,11 +81,11 @@ def _init_redis() -> None:
 async def lifespan(app: FastAPI):
     """Warm-up & teardown hook for long-lived resources."""
     global worker_process, redis_available, long_memory
-    
-    # Initialize Redis connection (optional)
+
+    # ── Always guarantee a working long-term memory ────────────────────────────
+    # Try Redis first; fall back to JSON file (works on HF Spaces / any env).
     _init_redis()
-    
-    # Initialize long-term memory if Redis is available
+
     if redis_available:
         try:
             long_memory = LongTermMemory(
@@ -95,11 +95,13 @@ async def lifespan(app: FastAPI):
             )
             logger.info("✅ Long-term memory initialized (Redis-backed)")
         except Exception as e:
-            logger.warning(f"Could not initialize long-term memory: {e}")
-            long_memory = None
+            logger.warning(f"Redis long-term memory init failed: {e}. Falling back to JSON file.")
+            long_memory = LongTermMemory()  # JSON-file fallback
     else:
-        logger.info("Long-term memory skipped (Redis not available)")
-    
+        # HF Spaces / local without Redis — use JSON file-backed store
+        long_memory = LongTermMemory()
+        logger.info("✅ Long-term memory initialized (JSON file-backed — Redis not available)")
+
     # 1. Start the RQ worker process only if Redis is available
     if redis_available:
         import subprocess
@@ -172,7 +174,8 @@ rag_agent      = CustomerSupportRAGAgent()   # AI-lixir docs RAG agent
 orchestrator = OrchestratorBrain()
 short_memory = ShortTermMemory()
 
-# Long-term memory requires Redis - initialize after Redis check in lifespan
+# Long-term memory — always initialized in lifespan (JSON fallback guaranteed)
+# Set a safe None default here; overwritten in lifespan before first request
 long_memory: Optional[LongTermMemory] = None
 
 SESSION_MEMORY: Dict[str, List[Dict[str, str]]] = {}
@@ -225,22 +228,49 @@ class AudioAgentRequest(BaseModel):
 # Orchestrator Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 def is_general_greeting(text: str) -> bool:
+    """Returns True for greetings, social messages, and casual questions that
+    should skip the orchestrator and go straight to the friendly APP_AGENT."""
     text_lower = text.strip().lower()
+
+    # ── Explicit greeting / farewell / gratitude patterns ──────────────────────
     greeting_patterns = [
-        r"^(hello|hi|hey|greetings|السلام عليكم|أهلا|مرحبا|كيف حالك|شنو أخبارك|كيفك).*$",
-        r"^(what is|what's|who are|who is|حكي|شنو|ويش)",
-        r"^(thanks|شكرا|اشكرك|thank you).*$",
-        r"^(bye|goodbye|الوداع|باي|سلام|مع السلامة).*$",
+        # English greetings
+        r"^(hello|hi|hey|howdy|greetings|good\s*(morning|afternoon|evening|night|day)).*$",
+        r"^(how are you|how('?s| is) it going|how('?s| are) things|what'?s up|sup|yo).*$",
+        r"^(nice to meet you|pleased to meet you|good to see you).*$",
+        r"^(thanks|thank you|thank you so much|many thanks|cheers|appreciate it).*$",
+        r"^(bye|goodbye|see you|take care|later|farewell|have a good one).*$",
+        r"^(what can you do|what do you do|who are you|what are you|tell me about yourself).*$",
+        r"^(help|i need help|can you help|can you assist).*$",
+        r"^(ok|okay|sure|cool|great|awesome|got it|understood|sounds good|perfect|nice).*$",
+        r"^(yes|no|maybe|yep|nope|yeah|nah)$",
+        r"^(welcome|you'?re welcome|np|no problem|no worries|anytime).*$",
+        r"^(sorry|excuse me|my bad|apologies|pardon).*$",
+        # Arabic greetings (formal & informal)
+        r"^(السلام عليكم|وعليكم السلام|أهلاً|أهلا|مرحباً|مرحبا|هلا|هلو|هاي).*$",
+        r"^(كيف حالك|كيف الحال|شلونك|عامل إيه|إيه أخبارك|شنو أخبارك|كيفك|شو أخبارك).*$",
+        r"^(صباح الخير|صباح النور|مساء الخير|مساء النور|تصبح على خير).*$",
+        r"^(شكراً|شكرا|شكرًا|اشكرك|ممنون|متشكر|جزاك الله خيراً).*$",
+        r"^(مع السلامة|باي|وداعاً|في أمان الله|إلى اللقاء|يسلمك).*$",
+        r"^(من أنت|ما هو|ماذا تفعل|ماذا تعرف|ما الذي يمكنك|ايش تقدر تسوي).*$",
+        r"^(نعم|لا|حسناً|تمام|موافق|صحيح|بالتأكيد|ماشي|اوكي).*$",
+        r"^(آسف|عذراً|سامحني|معليش|مع احترامي).*$",
+        r"^(سلام)$",
     ]
     for pattern in greeting_patterns:
-        if re.match(pattern, text_lower):
+        if re.match(pattern, text_lower, re.IGNORECASE):
             return True
-    if len(text_lower.split()) <= 2 and not any(
-        kw in text_lower for kw in
-        ["compound", "drug", "disease", "molecule", "chemical", "smiles", "admet",
-         "screening", "pathway", "protein", "target", "مركب", "دواء", "مرض"]
-    ):
+
+    # ── Very short messages without any scientific keywords ────────────────────
+    scientific_keywords = [
+        "compound", "drug", "disease", "molecule", "chemical", "smiles", "admet",
+        "screening", "pathway", "protein", "target", "receptor", "ligand", "inhibitor",
+        "biomarker", "clinical", "genome", "dna", "rna", "enzyme", "pharmacology",
+        "مركب", "دواء", "مرض", "بروتين", "جين", "مسار", "علاج", "دراسة", "تحليل"
+    ]
+    if len(text_lower.split()) <= 3 and not any(kw in text_lower for kw in scientific_keywords):
         return True
+
     return False
 
 
@@ -277,30 +307,39 @@ async def classify_domain(text_input: str) -> bool:
     """
     Classifies whether the user query is within the domain of the AI Scientific OS.
     Domain includes: Drug Discovery, Chemistry, Biology, Bioinformatics, Cheminformatics,
-    Biochemistry, Pharmacology, diseases, target proteins, SMILES, ADMET, and standard app support/greetings.
-    General medical queries (like diagnosing a headache, clinical prescriptions), law,
-    history, general coding, math, general science, etc. are OUT of domain.
+    Biochemistry, Pharmacology, diseases, target proteins, SMILES, ADMET, app support, and
+    ANY form of greeting, social message, or casual conversation.
+    Hard out-of-domain: law, unrelated coding, pure history/politics/cooking/sports etc.
     """
-    prompt = f"""
-    You are the safety and domain classifier for a Scientific Operating System specializing in Drug Discovery.
-    Determine if the following user query is WITHIN the domain or OUT of domain.
+    prompt = f"""You are the safety and domain classifier for an AI Scientific Operating System
+specializing in Drug Discovery, Cheminformatics, and Biomedical research.
 
-    Within-Domain topics:
-    - Drug Discovery & Repurposing
-    - Chemistry, molecules, compounds, SMILES, ADMET, chemical properties
-    - Biology, bioinformatics, proteins, genes, pathways, diseases, target receptors
-    - Scientific OS help, features, standard greetings (e.g. hello, hi, how are you, thanks, bye)
+Determine if the user query is WITHIN-DOMAIN (IN) or OUT-OF-DOMAIN (OUT).
 
-    Out-of-Domain topics:
-    - General medicine, symptom self-diagnosis, clinical prescriptions, treatment advice, surgery (e.g., "what should I take for headache", "how to cure cancer in humans")
-    - Law, legal advice, lawyers, court cases
-    - General coding, software engineering (unless related to this app)
-    - History, geography, politics, sports, entertainment, general math, general science, cooking, etc.
+=== ALWAYS classify as IN-DOMAIN ===
+- Greetings of ANY kind: "hello", "hi", "good morning", "مرحبا", "صباح الخير", "سلام", etc.
+- Social/conversational messages: "how are you", "thanks", "bye", "ok", "yes", "no", etc.
+- Expressions of gratitude, apologies, confirmations, short casual replies
+- Questions about this assistant: "who are you", "what can you do", "help me"
+- Drug Discovery & Repurposing
+- Chemistry, molecules, compounds, SMILES, ADMET, chemical properties
+- Biology, bioinformatics, proteins, genes, pathways, diseases, target receptors
+- Pharmacology, clinical trials, drug-target interactions
+- Questions about AI-lixir platform features, API, documentation
 
-    User query: "{text_input}"
+=== Classify as OUT-OF-DOMAIN ONLY if clearly unrelated ===
+- Personal medical advice: "I have a headache what should I take", "should I take this prescription"
+- Law, legal advice, court cases, lawyers
+- General coding/programming unrelated to this system
+- History, geography, politics, sports, entertainment, cooking, weather
+- Pure mathematics with no scientific context
+- Financial advice, stock markets, economics
 
-    Respond ONLY with "IN" if it is within-domain, or "OUT" if it is out-of-domain. Do not add any explanation.
-    """
+IMPORTANT: When in doubt, classify as IN. Never reject social/conversational messages.
+
+User query: "{text_input}"
+
+Respond ONLY with "IN" or "OUT". No explanation."""
     try:
         response = await client.chat.completions.create(
             model=settings.ORCHESTRATOR_MODEL,
@@ -311,7 +350,7 @@ async def classify_domain(text_input: str) -> bool:
         verdict = response.choices[0].message.content.strip().upper()
         return "OUT" not in verdict
     except Exception:
-        # Fallback to true to avoid blocking on API errors
+        # Fallback to IN to avoid blocking on API errors
         return True
 
 
@@ -355,7 +394,15 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
     if should_skip_orchestrator(text_input):
         chat_history = short_memory.get_history(session_id, limit=12)
         messages = [
-            {"role": "system", "content": "The user sent a casual message or greeting. Provide a warm, friendly response. Respond in the same language they used (Arabic or English) briefly. Keep the conversation history in context."}
+            {"role": "system", "content": (
+                "You are AI-lixir, a friendly and knowledgeable AI Scientific Operating System "
+                "specializing in Drug Discovery, Cheminformatics, and Biomedical Research. "
+                "The user has sent a casual message, greeting, or conversational input. "
+                "Respond warmly and helpfully in the SAME language the user used (Arabic or English). "
+                "Be concise and natural. If it's a greeting, introduce yourself briefly and invite them "
+                "to ask about drug discovery, molecular analysis, ADMET predictions, or biomedical topics. "
+                "Never say you cannot help with greetings — always engage positively."
+            )}
         ]
         for msg in chat_history:
             messages.append(msg)
@@ -375,6 +422,12 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
                 yield token
         short_memory.add_message(session_id, "user", text_input)
         short_memory.add_message(session_id, "assistant", full_reply)
+        if long_memory is not None:
+            try:
+                long_memory.add_entry(session_id, f"User: {text_input}\nAssistant: {full_reply}",
+                                      metadata={"intent": "APP_HELP", "agent": "APP_AGENT"})
+            except Exception as _lm_err:
+                logger.warning(f"long_memory.add_entry failed: {_lm_err}")
         return
 
     # Agent routing
@@ -459,7 +512,12 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
         short_memory.add_message(session_id, "assistant", rag_output)
         SESSION_MEMORY.setdefault(session_id, []).append({"role": "user", "content": text_input})
         SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": rag_output})
-        long_memory.add_entry(session_id, rag_output, metadata={"intent": intent, "agent": "RAG_AGENT"})
+        if long_memory is not None:
+            try:
+                long_memory.add_entry(session_id, f"User: {text_input}\nAssistant: {rag_output}",
+                                      metadata={"intent": intent, "agent": "RAG_AGENT"})
+            except Exception as _lm_err:
+                logger.warning(f"long_memory.add_entry failed: {_lm_err}")
         return
 
     if chemical_output or medical_output:
@@ -496,7 +554,15 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
     short_memory.add_message(session_id, "assistant", full_reply)
     SESSION_MEMORY.setdefault(session_id, []).append({"role": "user", "content": text_input})
     SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": full_reply})
-    long_memory.add_entry(session_id, full_reply, metadata={"intent": intent, "agent": target_agent})
+    if long_memory is not None:
+        try:
+            long_memory.add_entry(
+                session_id,
+                f"User: {text_input}\nAssistant: {full_reply}",
+                metadata={"intent": intent, "agent": target_agent}
+            )
+        except Exception as _lm_err:
+            logger.warning(f"long_memory.add_entry failed: {_lm_err}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

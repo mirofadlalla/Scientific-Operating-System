@@ -1,5 +1,6 @@
 import os
 import tempfile
+import logging
 from typing import List, Dict, Any, Callable
 
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, StorageContext
@@ -14,6 +15,9 @@ if str(_rag_root) not in sys.path:
     sys.path.insert(0, str(_rag_root))
 
 from chunking.factory import ChunkingFactory
+from src.indexer import PERSIST_DIR
+
+logger = logging.getLogger(__name__)
 
 
 class RAGIngestionService:
@@ -161,10 +165,15 @@ class RAGIngestionService:
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             VectorStoreIndex(nodes, storage_context=storage_context)
         else:
-            print("Using in-memory VectorStoreIndex")
-            index = VectorStoreIndex(nodes)
+            logger.info(f"Weaviate unavailable — building in-memory index and persisting to disk: {PERSIST_DIR}")
+            storage_context = StorageContext.from_defaults()
+            index = VectorStoreIndex(nodes, storage_context=storage_context)
+            # Persist so data survives HF Space / process restarts
+            os.makedirs(PERSIST_DIR, exist_ok=True)
+            storage_context.persist(persist_dir=PERSIST_DIR)
             import src.indexer
             src.indexer.VectorIndexManager._GLOBAL_IN_MEMORY_INDEX = index
+            logger.info(f"✅ Ingested {len(nodes)} nodes and persisted to disk at {PERSIST_DIR}")
 
         return {
             "status":        "success",

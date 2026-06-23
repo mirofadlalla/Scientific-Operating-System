@@ -7,6 +7,10 @@ import redis
 
 logger = logging.getLogger(__name__)
 
+# Maximum number of entries to keep in the JSON fallback store.
+# Oldest entries are pruned beyond this limit to prevent unbounded file growth.
+_MAX_JSON_ENTRIES = 5000
+
 
 class LongTermMemory:
 	"""Persistent long-term memory backed by Redis with a JSON-file fallback.
@@ -21,6 +25,7 @@ class LongTermMemory:
 		self._lock = Lock()
 		self.is_redis = False
 		self.redis_client = None
+		self._store: List[Dict[str, Any]] = []  # Always initialize to avoid AttributeError
 
 		try:
 			# Establish Redis connection with timeout to avoid hanging if down
@@ -48,7 +53,7 @@ class LongTermMemory:
 				json.dump([], f)
 		with open(self.path, "r", encoding="utf-8") as f:
 			try:
-				self._store: List[Dict[str, Any]] = json.load(f)
+				self._store = json.load(f)
 			except Exception:
 				self._store = []
 
@@ -64,9 +69,13 @@ class LongTermMemory:
 				self.is_redis = False  # Set to False so we fall back to file write
 
 		with self._lock:
-			if not hasattr(self, "_store"):
-				self._load_json_store()
+			# _store is guaranteed initialized; reload from disk to get latest state
+			self._load_json_store()
 			self._store.append(entry)
+			# Prune oldest entries if we exceed the cap
+			if len(self._store) > _MAX_JSON_ENTRIES:
+				self._store = self._store[-_MAX_JSON_ENTRIES:]
+				logger.info(f"LongTermMemory pruned to last {_MAX_JSON_ENTRIES} entries.")
 			with open(self.path, "w", encoding="utf-8") as f:
 				json.dump(self._store, f, ensure_ascii=False, indent=2)
 
