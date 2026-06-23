@@ -1,6 +1,6 @@
 import os
 import tempfile
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable
 
 from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, StorageContext
 from llama_index.vector_stores.weaviate import WeaviateVectorStore
@@ -57,6 +57,7 @@ class RAGIngestionService:
         self,
         file_paths: List[str],
         strategy: str = "markdown",
+        status_callback: Callable[[str, str], None] | None = None,
         **strategy_kwargs,
     ) -> Dict[str, Any]:
         """
@@ -72,6 +73,8 @@ class RAGIngestionService:
             return {"status": "error", "message": "No files provided."}
 
         try:
+            if status_callback:
+                status_callback("reading", "Reading file...")
             # 1. Load documents
             reader = SimpleDirectoryReader(input_files=file_paths)
             documents = reader.load_data()
@@ -79,7 +82,7 @@ class RAGIngestionService:
             if not documents:
                 return {"status": "error", "message": "No content found in provided files."}
 
-            return self._run_pipeline(documents, strategy, **strategy_kwargs)
+            return self._run_pipeline(documents, strategy, status_callback=status_callback, **strategy_kwargs)
 
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
@@ -89,6 +92,7 @@ class RAGIngestionService:
         filename: str,
         content: bytes,
         strategy: str = "markdown",
+        status_callback: Callable[[str, str], None] | None = None,
         **strategy_kwargs,
     ) -> Dict[str, Any]:
         """
@@ -104,7 +108,7 @@ class RAGIngestionService:
                 tmp.write(content)
                 tmp_path = tmp.name
 
-            return self.ingest_files([tmp_path], strategy, **strategy_kwargs)
+            return self.ingest_files([tmp_path], strategy, status_callback=status_callback, **strategy_kwargs)
 
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
@@ -117,8 +121,11 @@ class RAGIngestionService:
         self,
         documents,
         strategy: str,
+        status_callback: Callable[[str, str], None] | None = None,
         **strategy_kwargs,
     ) -> Dict[str, Any]:
+        if status_callback:
+            status_callback("chunking", "Chunking document...")
         # 2. Chunk
         chunker = ChunkingFactory.get_strategy(strategy, **strategy_kwargs)
         nodes   = chunker.chunk(documents)
@@ -126,9 +133,15 @@ class RAGIngestionService:
         if not nodes:
             return {"status": "error", "message": "Chunking produced 0 nodes."}
 
+        if status_callback:
+            status_callback("embedding", "Generating embeddings (Groq)...")
+
         # 3. Build index → embed + store in Weaviate
         vector_store    = self._get_vector_store()
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+        if status_callback:
+            status_callback("indexing", "Storing in Weaviate...")
 
         VectorStoreIndex(nodes, storage_context=storage_context)
 

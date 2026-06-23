@@ -6,7 +6,7 @@ import math
 import struct
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect, Form, BackgroundTasks
 from fastapi.responses import StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -52,7 +52,11 @@ rag_agent      = CustomerSupportRAGAgent()   # AI-lixir docs RAG agent
 # Orchestrator + Memory
 orchestrator = OrchestratorBrain()
 short_memory = ShortTermMemory()
-long_memory  = LongTermMemory()
+long_memory  = LongTermMemory(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB
+)
 SESSION_MEMORY: Dict[str, List[Dict[str, str]]] = {}
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -382,7 +386,7 @@ async def get_web_ui():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# RAG Knowledge Base Endpoints
+# RAG Knowledge Base Endpoints & Background Workers
 # ──────────────────────────────────────────────────────────────────────────────
 
 class RAGIngestRequest(BaseModel):
@@ -391,18 +395,109 @@ class RAGIngestRequest(BaseModel):
     chunk_overlap: int = 20
 
 
+# Global/Redis job status tracker
+ingestion_jobs: Dict[str, Dict[str, Any]] = {}
+
+def update_job_status(job_id: str, status: str, message: str = "", extra_data: dict = None):
+    data = {
+        "status": status,
+        "message": message,
+        "filename": (extra_data.get("filename", "") if extra_data else ""),
+        "strategy": (extra_data.get("strategy", "") if extra_data else ""),
+        "nodes_created": (extra_data.get("nodes_created", 0) if extra_data else 0),
+        "index_name": (extra_data.get("index_name", "") if extra_data else ""),
+        "error_message": (extra_data.get("error_message", "") if extra_data else "")
+    }
+    if extra_data:
+        data.update(extra_data)
+
+    ingestion_jobs[job_id] = data
+
+    try:
+        if long_memory.is_redis:
+            long_memory.redis_client.set(f"rag:job:{job_id}", json.dumps(data), ex=3600)  # expires in 1 hour
+    except Exception as e:
+        logger.error(f"Failed to sync job status to Redis: {e}")
+
+def get_job_status(job_id: str) -> dict:
+    try:
+        if long_memory.is_redis:
+            val = long_memory.redis_client.get(f"rag:job:{job_id}")
+            if val:
+                return json.loads(val)
+    except Exception as e:
+        logger.error(f"Failed to fetch job status from Redis: {e}")
+    return ingestion_jobs.get(job_id, {"status": "unknown", "message": "Job not found"})
+
+
+async def run_background_ingest(job_id: str, filename: str, content: bytes, strategy: str):
+    def callback(step_name: str, step_msg: str):
+        update_job_status(job_id, step_name, step_msg, {"filename": filename, "strategy": strategy})
+
+    try:
+        if not rag_agent._ready:
+            callback("reading", "Warming up RAG environment...")
+            await rag_agent._initialise()
+
+        ingestion_svc = rag_agent.get_ingestion_service()
+        
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: ingestion_svc.ingest_bytes(
+                filename=filename,
+                content=content,
+                strategy=strategy,
+                status_callback=callback
+            )
+        )
+
+        if result.get("status") == "error":
+            error_msg = result.get("message", "Unknown ingestion error.")
+            update_job_status(job_id, "failed", f"Ingestion failed: {error_msg}", {
+                "filename": filename,
+                "strategy": strategy,
+                "error_message": error_msg
+            })
+            return
+
+        update_job_status(job_id, "reloading", "Reloading query engine...", {
+            "filename": filename,
+            "strategy": strategy,
+            "nodes_created": result.get("nodes_created"),
+            "index_name": result.get("index_name"),
+        })
+        await rag_agent.reload_engine()
+
+        update_job_status(job_id, "completed", "Document ingested successfully.", {
+            "filename": filename,
+            "strategy": strategy,
+            "nodes_created": result.get("nodes_created"),
+            "index_name": result.get("index_name"),
+        })
+
+    except Exception as exc:
+        logger.error(f"[run_background_ingest] Unexpected error: {exc}")
+        update_job_status(job_id, "failed", f"Ingestion failed: {exc}", {
+            "filename": filename,
+            "strategy": strategy,
+            "error_message": str(exc)
+        })
+
+
 @app.post("/rag/ingest")
 async def rag_ingest(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     strategy: str    = Form(default="markdown"),
 ):
     """
-    Upload a Markdown (.md) file and ingest it into the Weaviate knowledge base.
+    Upload a Markdown (.md) file and ingest it into Weaviate in the background.
 
     - **file**: The markdown file to ingest.
     - **strategy**: Chunking strategy — 'markdown' (default), 'sentence', or 'token'.
 
-    Returns ingestion stats: nodes created, strategy used, index name.
+    Returns a job_id for status tracking.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided.")
@@ -420,33 +515,27 @@ async def rag_ingest(
         if not content:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
-        ingestion_svc = rag_agent.get_ingestion_service()
+        import uuid
+        job_id = str(uuid.uuid4())
+        
+        # Initialize status as pending
+        update_job_status(job_id, "pending", "Job scheduled...", {"filename": file.filename, "strategy": strategy})
 
-        # Run blocking ingestion in a thread pool to avoid blocking the event loop
-        loop   = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: ingestion_svc.ingest_bytes(
-                filename=file.filename,
-                content=content,
-                strategy=strategy,
-            )
+        # Add background task
+        background_tasks.add_task(
+            run_background_ingest,
+            job_id=job_id,
+            filename=file.filename,
+            content=content,
+            strategy=strategy
         )
 
-        if result.get("status") == "error":
-            raise HTTPException(status_code=500, detail=result.get("message", "Ingestion failed."))
-
-        # Reload the RAG query engine so new nodes are immediately queryable
-        asyncio.create_task(rag_agent.reload_engine())
-
         return {
-            "status":        "success",
-            "filename":      file.filename,
-            "strategy":      result.get("strategy"),
-            "nodes_created": result.get("nodes_created"),
-            "index_name":    result.get("index_name"),
-            "files":         result.get("files"),
-            "message":       "Document ingested successfully. Knowledge base is reloading.",
+            "status": "success",
+            "job_id": job_id,
+            "filename": file.filename,
+            "strategy": strategy,
+            "message": "Ingestion job started in background."
         }
 
     except HTTPException:
@@ -454,6 +543,14 @@ async def rag_ingest(
     except Exception as exc:
         logger.error(f"[/rag/ingest] Unexpected error: {exc}")
         raise HTTPException(status_code=500, detail=f"Ingestion error: {exc}")
+
+
+@app.get("/rag/ingest/status/{job_id}")
+async def rag_ingest_status(job_id: str):
+    """
+    Check the status of an active background ingestion job.
+    """
+    return get_job_status(job_id)
 
 
 @app.get("/rag/status")

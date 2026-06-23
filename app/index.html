@@ -1348,52 +1348,85 @@ async function kbUpload() {
     kbProgress.classList.add('visible');
     resetSteps();
 
-    // Step 1: Upload
+    // Step 1: Uploading file to server
     setStep('upload', 'active');
-    await sleep(300);
-
+    
     const form = new FormData();
     form.append('file', kbSelectedFile, kbSelectedFile.name);
     form.append('strategy', strategy);
 
-    let result;
     try {
-        setStep('upload', 'done');
-        setStep('chunk',  'active');
-        await sleep(400);
-        setStep('chunk',  'done');
-        setStep('embed',  'active');
-
         const res = await fetch('/rag/ingest', { method: 'POST', body: form });
-        result = await res.json();
+        const result = await res.json();
 
-        if (!res.ok || result.status === 'error') {
-            throw new Error(result.detail || result.message || 'Ingestion failed');
+        if (!res.ok || result.status !== 'success') {
+            setStep('upload', 'error');
+            throw new Error(result.detail || result.message || 'Failed to submit file');
         }
 
-        setStep('embed',  'done');
-        setStep('index',  'active');
-        await sleep(300);
-        setStep('index',  'done');
-        setStep('reload', 'active');
-        await sleep(600);   // give reload_engine a moment
-        setStep('reload', 'done');
+        const jobId = result.job_id;
+        let done = false;
+        let activeStep = 'upload';
 
-        // Show success in chat
-        appendMsg('ai',
-            `✅ Knowledge Base updated!\n` +
-            `📄 File: ${result.filename}\n` +
-            `🔗 Strategy: ${result.strategy}\n` +
-            `📦 Nodes indexed: ${result.nodes_created}\n` +
-            `🗄️ Index: ${result.index_name}`,
-            'success'
-        );
+        // Poll for progress in the background
+        while (!done) {
+            await sleep(600);
+            const statusRes = await fetch(`/rag/ingest/status/${jobId}`);
+            const data = await statusRes.json();
+
+            if (data.status === 'pending' || data.status === 'reading') {
+                activeStep = 'upload';
+                setStep('upload', 'active');
+            } else if (data.status === 'chunking') {
+                activeStep = 'chunk';
+                setStep('upload', 'done');
+                setStep('chunk', 'active');
+            } else if (data.status === 'embedding') {
+                activeStep = 'embed';
+                setStep('upload', 'done');
+                setStep('chunk', 'done');
+                setStep('embed', 'active');
+            } else if (data.status === 'indexing') {
+                activeStep = 'index';
+                setStep('upload', 'done');
+                setStep('chunk', 'done');
+                setStep('embed', 'done');
+                setStep('index', 'active');
+            } else if (data.status === 'reloading') {
+                activeStep = 'reload';
+                setStep('upload', 'done');
+                setStep('chunk', 'done');
+                setStep('embed', 'done');
+                setStep('index', 'done');
+                setStep('reload', 'active');
+            } else if (data.status === 'completed') {
+                setStep('upload', 'done');
+                setStep('chunk', 'done');
+                setStep('embed', 'done');
+                setStep('index', 'done');
+                setStep('reload', 'done');
+                
+                // Show success in chat
+                appendMsg('ai',
+                    `✅ Knowledge Base updated!\n` +
+                    `📄 File: ${data.filename}\n` +
+                    `🔗 Strategy: ${data.strategy}\n` +
+                    `📦 Nodes indexed: ${data.nodes_created}\n` +
+                    `🗄️ Index: ${data.index_name}`,
+                    'success'
+                );
+                
+                done = true;
+            } else if (data.status === 'failed') {
+                setStep(activeStep, 'error');
+                throw new Error(data.error_message || 'Background ingestion failed');
+            }
+        }
 
         // Refresh status badge
         await pollRAGStatus();
 
     } catch (err) {
-        setStep('embed',  'error');
         appendMsg('ai', `❌ Ingestion failed: ${err.message}`, 'error');
     } finally {
         kbUploadBtn.disabled = false;
