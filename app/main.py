@@ -17,7 +17,7 @@ import os
 from app.config import settings
 from app.agents.chemical.agent import ChemicalAgent
 from app.agents.medical.agent import MedicalAgent
-from app.agents.customer_support.agent import CustomerSupportRAGAgent
+from app.agents.customer_support.agent import CustomerSupportRAGAgent, rag_state
 from app.orchestrator.brain import OrchestratorBrain
 from app.memory.short_term import ShortTermMemory
 from app.memory.long_term import LongTermMemory
@@ -138,7 +138,21 @@ async def lifespan(app: FastAPI):
 
     await rag_agent.close()
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+class ReadinessMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if not rag_state["ready"]:
+            return JSONResponse(
+                status_code=503, 
+                content={"detail": "System is initializing, please wait"}
+            )
+        return await call_next(request)
+
 app = FastAPI(title="AI Scientific OS — Voice Core", lifespan=lifespan)
+app.add_middleware(ReadinessMiddleware)
 
 client = AsyncOpenAI(
     base_url=settings.GROQ_BASE_URL,

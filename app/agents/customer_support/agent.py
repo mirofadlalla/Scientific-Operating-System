@@ -24,7 +24,6 @@ _rag_root = pathlib.Path(__file__).resolve().parent / "ai-lixir-rag-system"
 if str(_rag_root) not in sys.path:
     sys.path.insert(0, str(_rag_root))
 
-from src.config   import setup_rag_environment
 from src.engine   import RAGEngineBuilder
 from src.indexer  import VectorIndexManager
 from src.ingestion_service import RAGIngestionService
@@ -40,6 +39,13 @@ _UNAVAILABLE_MSG = (
     "Please ensure the Weaviate instance is running and try again."
 )
 
+
+# Global State for strict readiness gating
+rag_state = {
+    "ready": False,
+    "embedding_initialized": False,
+    "llm_initialized": False
+}
 
 class CustomerSupportRAGAgent:
     """
@@ -155,57 +161,83 @@ class CustomerSupportRAGAgent:
                 pass
 
     # ── Internal initialisation ───────────────────────────────────────────────
+    def _bootstrap_llama_index(self):
+        """Atomic initialization of embeddings and LLM."""
+        from src.config import GROQ_API_KEY, ORCHESTRATOR_MODEL, EMBEDDING_PROVIDER, EMBED_MODEL, OPENAI_API_KEY
+        from src.embeddings import EmbeddingProviderFactory
+        from llama_index.llms.groq import Groq
+        from llama_index.core import Settings
+        
+        if not GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY is not set.")
+
+        # 1. Initialize Embeddings FIRST
+        Settings.embed_model = EmbeddingProviderFactory.create_embedding_model(
+            provider=EMBEDDING_PROVIDER,
+            model_name=EMBED_MODEL,
+            api_key=OPENAI_API_KEY
+        )
+        rag_state["embedding_initialized"] = True
+        
+        # 2. Initialize LLM
+        Settings.llm = Groq(
+            model=ORCHESTRATOR_MODEL,
+            api_key=GROQ_API_KEY,
+        )
+        rag_state["llm_initialized"] = True
+        
+        logger.info(f"✅ LLM  → Groq / {ORCHESTRATOR_MODEL}")
+        logger.info(f"✅ Embed → {EMBEDDING_PROVIDER.capitalize()} / {EMBED_MODEL}")
+
     async def _initialise(self) -> None:
         """
         One-time async initialisation (protected by asyncio.Lock to prevent
         duplicate concurrent initialisations).
         """
         async with self._lock:
-            if self._ready:      # another coroutine finished while we waited
-                return
-            if self._initialising:
-                return
-            self._initialising = True
-
-        try:
-            logger.info("[RAGAgent] Initialising Groq + Weaviate environment…")
-
-            # 1. Configure LlamaIndex globals
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, setup_rag_environment)
-
-            # 2. Connect to Weaviate and load / build the index
-            self._index_manager = VectorIndexManager(index_name=self.INDEX_NAME)
-
+            if self._ready or rag_state["ready"]: return
+            
             try:
-                index = await loop.run_in_executor(
-                    None, self._index_manager.load_persisted_index
-                )
-                logger.info(f"[RAGAgent] Loaded existing index '{self.INDEX_NAME}' from Weaviate.")
-            except Exception as exc:
-                import src.indexer
-                if getattr(src.indexer.VectorIndexManager, "_GLOBAL_IN_MEMORY_INDEX", None) is not None:
-                    index = src.indexer.VectorIndexManager._GLOBAL_IN_MEMORY_INDEX
-                    logger.info("[RAGAgent] Loaded existing in-memory index.")
-                else:
-                    logger.warning(
-                        f"[RAGAgent] Could not load index ('{exc}'). "
-                        "Engine will become active after first ingestion."
+                logger.info("[RAGAgent] Initialising Groq + Weaviate environment…")
+
+                # 1. Configure LlamaIndex globals
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, self._bootstrap_llama_index)
+
+                # 2. Connect to Weaviate and load / build the index
+                self._index_manager = VectorIndexManager(index_name=self.INDEX_NAME)
+
+                try:
+                    index = await loop.run_in_executor(
+                        None, self._index_manager.load_persisted_index
                     )
-                    # No data yet — engine not ready until documents are ingested
-                    return
+                    logger.info(f"[RAGAgent] Loaded existing index '{self.INDEX_NAME}' from Weaviate.")
+                except Exception as exc:
+                    import src.indexer
+                    if getattr(src.indexer.VectorIndexManager, "_GLOBAL_IN_MEMORY_INDEX", None) is not None:
+                        index = src.indexer.VectorIndexManager._GLOBAL_IN_MEMORY_INDEX
+                        logger.info("[RAGAgent] Loaded existing in-memory index.")
+                    else:
+                        logger.warning(
+                            f"[RAGAgent] Could not load index ('{exc}'). "
+                            "Engine will become active after first ingestion."
+                        )
+                        # No data yet — engine not ready until documents are ingested
+                        return
 
-            # 3. Build the hybrid query engine
-            engine_builder     = RAGEngineBuilder(index=index)
-            self._query_engine = engine_builder.build_hybrid_query_engine(
-                top_k=self.TOP_K,
-                alpha=self.ALPHA,
-            )
+                # 3. Build the hybrid query engine
+                engine_builder     = RAGEngineBuilder(index=index)
+                self._query_engine = engine_builder.build_hybrid_query_engine(
+                    top_k=self.TOP_K,
+                    alpha=self.ALPHA,
+                )
 
-            self._ready = True
-            logger.info("[RAGAgent] ✅ RAG engine ready.")
+                # 4. Agent ready
+                self._ready = True
+                rag_state["ready"] = True
+                logger.info("[RAGAgent] Initialisation complete.")
 
-        except Exception as exc:
-            logger.error(f"[RAGAgent] Initialisation failed: {exc}")
-        finally:
-            self._initialising = False
+            except Exception as exc:
+                logger.error(f"[RAGAgent] Initialisation failed: {exc}")
+            finally:
+                self._initialising = False
