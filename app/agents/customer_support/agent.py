@@ -107,12 +107,13 @@ class CustomerSupportRAGAgent:
 
     async def reload_engine(self) -> None:
         """
-        Force a reload of the query engine from Weaviate.
-        Call this after new documents have been ingested.
+        Force a reload of the query engine after new documents have been ingested.
+        Resets BOTH instance and global readiness flags so _initialise() re-runs fully.
         """
         async with self._lock:
             self._ready = False
             self._query_engine = None
+            rag_state["ready"] = False  # ← Fix Bug 1: reset global flag so _initialise() doesn't skip
         await self._initialise()
 
     async def status(self) -> dict:
@@ -174,11 +175,12 @@ class CustomerSupportRAGAgent:
         if not GROQ_API_KEY:
             raise ValueError("GROQ_API_KEY is not set.")
 
-        # 1. Initialize Embeddings FIRST
+        # 1. Initialize Embeddings FIRST (Fix Bug 4: pass groq_api_key for Groq provider)
         Settings.embed_model = EmbeddingProviderFactory.create_embedding_model(
             provider=EMBEDDING_PROVIDER,
             model_name=EMBED_MODEL,
-            api_key=OPENAI_API_KEY
+            api_key=OPENAI_API_KEY,
+            groq_api_key=GROQ_API_KEY,  # ← Fix Bug 4: enable Groq embeddings
         )
         rag_state["embedding_initialized"] = True
         
@@ -203,9 +205,12 @@ class CustomerSupportRAGAgent:
             try:
                 logger.info("[RAGAgent] Initialising Groq + Weaviate environment…")
 
-                # 1. Configure LlamaIndex globals
+                # 1. Configure LlamaIndex globals (skip if already done — Fix Bug 6)
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, self._bootstrap_llama_index)
+                if not rag_state.get("embedding_initialized") or not rag_state.get("llm_initialized"):
+                    await loop.run_in_executor(None, self._bootstrap_llama_index)
+                else:
+                    logger.info("[RAGAgent] LLM + Embeddings already initialised — skipping bootstrap.")
 
                 # 2. Connect to Weaviate and load / build the index
                 self._index_manager = VectorIndexManager(index_name=self.INDEX_NAME)

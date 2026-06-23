@@ -16,7 +16,21 @@ class EmbeddingProviderFactory:
         provider = (provider or "huggingface").lower().strip()
         
         try:
-            if provider == "openai":
+            # Fix Bug 4: Groq embeddings via OpenAI-compatible endpoint
+            if provider == "groq":
+                from llama_index.embeddings.openai import OpenAIEmbedding
+                api_key = kwargs.get("groq_api_key") or kwargs.get("api_key")
+                if not api_key:
+                    raise ValueError("GROQ_API_KEY is required for Groq embeddings.")
+                logger.info(f"[Embeddings] Using Groq API embeddings: {model_name}")
+                return OpenAIEmbedding(
+                    model=model_name,
+                    api_key=api_key,
+                    api_base="https://api.groq.com/openai/v1",
+                    embed_batch_size=kwargs.get("embed_batch_size", 20),
+                )
+
+            elif provider == "openai":
                 api_key = kwargs.get("api_key")
                 if not api_key:
                     raise ValueError("OpenAI API key is required for OpenAI embeddings.")

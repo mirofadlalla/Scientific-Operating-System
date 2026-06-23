@@ -165,15 +165,29 @@ class RAGIngestionService:
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             VectorStoreIndex(nodes, storage_context=storage_context)
         else:
-            logger.info(f"Weaviate unavailable — building in-memory index and persisting to disk: {PERSIST_DIR}")
-            storage_context = StorageContext.from_defaults()
-            index = VectorStoreIndex(nodes, storage_context=storage_context)
-            # Persist so data survives HF Space / process restarts
-            os.makedirs(PERSIST_DIR, exist_ok=True)
-            storage_context.persist(persist_dir=PERSIST_DIR)
+            # Fix Bug 3: additive ingestion — insert into existing index instead of overwriting
             import src.indexer
+            logger.info(f"Weaviate unavailable — building in-memory index: {PERSIST_DIR}")
+
+            existing = src.indexer.VectorIndexManager._GLOBAL_IN_MEMORY_INDEX
+            if existing is not None:
+                # Add new nodes to the existing index (don't lose old data!)
+                logger.info(f"[Ingestion] Inserting {len(nodes)} new nodes into existing index.")
+                for node in nodes:
+                    existing.insert(node)
+                index = existing
+                # Re-persist to disk after adding new nodes
+                os.makedirs(PERSIST_DIR, exist_ok=True)
+                index.storage_context.persist(persist_dir=PERSIST_DIR)
+            else:
+                # First-time ingestion — build from scratch
+                storage_context = StorageContext.from_defaults()
+                index = VectorStoreIndex(nodes, storage_context=storage_context)
+                os.makedirs(PERSIST_DIR, exist_ok=True)
+                storage_context.persist(persist_dir=PERSIST_DIR)
+
             src.indexer.VectorIndexManager._GLOBAL_IN_MEMORY_INDEX = index
-            logger.info(f"✅ Ingested {len(nodes)} nodes and persisted to disk at {PERSIST_DIR}")
+            logger.info(f"✅ Ingested {len(nodes)} nodes, persisted to: {PERSIST_DIR}")
 
         return {
             "status":        "success",

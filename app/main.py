@@ -40,8 +40,8 @@ def _check_redis_available() -> bool:
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
             db=settings.REDIS_DB,
-            socket_connect_timeout=2,
-            socket_timeout=2
+            socket_connect_timeout=0.5,  # Fix Bug 5: 0.5s is enough to detect missing Redis
+            socket_timeout=0.5           # avoids 4s wasted on startup in HF Spaces
         )
         conn.ping()
         return True
@@ -60,8 +60,8 @@ def _init_redis() -> None:
             host=settings.REDIS_HOST,
             port=settings.REDIS_PORT,
             db=settings.REDIS_DB,
-            socket_connect_timeout=2,
-            socket_timeout=2
+            socket_connect_timeout=0.5,  # Fix Bug 5: fast fail when Redis not present
+            socket_timeout=0.5
         )
         redis_conn.ping()
         rq_queue = Queue("default", connection=redis_conn)
@@ -145,15 +145,19 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 class ReadinessMiddleware(BaseHTTPMiddleware):
+    # Paths that must always respond, even before the RAG engine finishes loading
+    _ALWAYS_ALLOW = {"/", "/rag/status", "/health", "/docs", "/openapi.json", "/redoc"}
+
     async def dispatch(self, request: Request, call_next):
-        # Allow root path (UI & health check) to load immediately
-        if request.url.path == "/":
+        path = request.url.path
+        # Always let through: UI, health checks, and status endpoints
+        if path in self._ALWAYS_ALLOW or path.startswith("/rag/ingest/status"):
             return await call_next(request)
-            
+
         if not rag_state["ready"]:
             return JSONResponse(
-                status_code=503, 
-                content={"detail": "System is initializing, please wait"}
+                status_code=503,
+                content={"detail": "System is initializing, please wait a few seconds and try again."}
             )
         return await call_next(request)
 
@@ -278,119 +282,51 @@ def should_skip_orchestrator(text: str) -> bool:
     return is_general_greeting(text)
 
 
-ORCHESTRATOR_SYSTEM_PROMPT = """
-You are the central brain (Orchestrator) of an AI Scientific OS specialising in Drug Discovery.
-Analyse the user's input, extract entities, and route the query to the correct expert agent.
+# ── Combined Orchestrator + Domain Classifier prompt ────────────────────────
+# This single prompt handles BOTH domain classification AND agent routing,
+# eliminating the need for a separate classify_domain() LLM API call.
+COMBINED_ORCHESTRATOR_PROMPT = """\
+You are the Central Brain of AI-lixir, an AI Scientific Operating System specializing in Drug Discovery.
+Your tasks:
+  1. Determine if the query is within domain.
+  2. If within domain, route it to the correct agent.
 
-Available Target Agents and their STRICT Intents:
-1. CHEMICAL_AGENT  → CHEMICAL_SIMILARITY | ADMET_ANALYSIS | DRUG_REPURPOSING
-   Use for: chemical structures, SMILES, ADMET predictions, molecular similarity, virtual screening.
-2. MEDICAL_AGENT   → BIOMEDICAL_MECHANISM
-   Use for: biological pathways, drug-target interactions, clinical reasoning, pharmacology.
-3. RAG_AGENT       → APP_SUPPORT_RAG
-   Use for: questions about AI-lixir platform features, service documentation, API endpoints,
-   how-to guides, system overview, ADMET service docs, generation service docs, or any question
-   that should be answered from the system documentation knowledge base.
-4. APP_AGENT       → APP_HELP
-   Use for: casual greetings, general assistant questions, unrelated support.
+Available agents:
+  CHEMICAL_AGENT  → intents: CHEMICAL_SIMILARITY | ADMET_ANALYSIS | DRUG_REPURPOSING
+      Use for: SMILES, chemical structures, ADMET properties, molecular similarity, virtual screening.
+  MEDICAL_AGENT   → intent: BIOMEDICAL_MECHANISM
+      Use for: biological pathways, drug-target interactions, clinical reasoning, pharmacology.
+  RAG_AGENT       → intent: APP_SUPPORT_RAG
+      Use for: questions about AI-lixir features, API docs, how-to guides, system documentation.
+  APP_AGENT       → intent: APP_HELP
+      Use for: greetings, casual chat, short replies, "who are you", "what can you do", thank-yous,
+               any ambiguous message that does NOT clearly fit the scientific agents above.
 
-You MUST respond ONLY with a raw JSON object containing exactly these fields:
+Out-of-domain (use intent OUT_OF_DOMAIN, target_agent NONE):
+  ONLY if the query is clearly about: law, cooking, sports, politics, personal medical prescriptions,
+  unrelated coding, history, finance, weather, entertainment, or any non-scientific topic.
+  When in doubt, default to APP_AGENT — never reject greetings or short messages.
+
+Respond ONLY with a raw JSON object (no markdown, no explanation):
 {
-  "intent": "CHEMICAL_SIMILARITY" | "ADMET_ANALYSIS" | "DRUG_REPURPOSING" | "BIOMEDICAL_MECHANISM" | "APP_SUPPORT_RAG" | "APP_HELP",
-  "target_agent": "CHEMICAL_AGENT" | "MEDICAL_AGENT" | "RAG_AGENT" | "APP_AGENT",
-  "entities": {"compound": "name if any", "smiles": "SMILES string if any", "disease": "name if any"}
+  "intent": "CHEMICAL_SIMILARITY"|"ADMET_ANALYSIS"|"DRUG_REPURPOSING"|"BIOMEDICAL_MECHANISM"|"APP_SUPPORT_RAG"|"APP_HELP"|"OUT_OF_DOMAIN",
+  "target_agent": "CHEMICAL_AGENT"|"MEDICAL_AGENT"|"RAG_AGENT"|"APP_AGENT"|"NONE",
+  "entities": {"compound": "", "smiles": "", "disease": ""},
+  "out_of_domain_reason": "brief reason only when OUT_OF_DOMAIN, else empty string"
 }
 """
-
-
-async def classify_domain(text_input: str) -> bool:
-    """
-    Classifies whether the user query is within the domain of the AI Scientific OS.
-    Domain includes: Drug Discovery, Chemistry, Biology, Bioinformatics, Cheminformatics,
-    Biochemistry, Pharmacology, diseases, target proteins, SMILES, ADMET, app support, and
-    ANY form of greeting, social message, or casual conversation.
-    Hard out-of-domain: law, unrelated coding, pure history/politics/cooking/sports etc.
-    """
-    prompt = f"""You are the safety and domain classifier for an AI Scientific Operating System
-specializing in Drug Discovery, Cheminformatics, and Biomedical research.
-
-Determine if the user query is WITHIN-DOMAIN (IN) or OUT-OF-DOMAIN (OUT).
-
-=== ALWAYS classify as IN-DOMAIN ===
-- Greetings of ANY kind: "hello", "hi", "good morning", "مرحبا", "صباح الخير", "سلام", etc.
-- Social/conversational messages: "how are you", "thanks", "bye", "ok", "yes", "no", etc.
-- Expressions of gratitude, apologies, confirmations, short casual replies
-- Questions about this assistant: "who are you", "what can you do", "help me"
-- Drug Discovery & Repurposing
-- Chemistry, molecules, compounds, SMILES, ADMET, chemical properties
-- Biology, bioinformatics, proteins, genes, pathways, diseases, target receptors
-- Pharmacology, clinical trials, drug-target interactions
-- Questions about AI-lixir platform features, API, documentation
-
-=== Classify as OUT-OF-DOMAIN ONLY if clearly unrelated ===
-- Personal medical advice: "I have a headache what should I take", "should I take this prescription"
-- Law, legal advice, court cases, lawyers
-- General coding/programming unrelated to this system
-- History, geography, politics, sports, entertainment, cooking, weather
-- Pure mathematics with no scientific context
-- Financial advice, stock markets, economics
-
-IMPORTANT: When in doubt, classify as IN. Never reject social/conversational messages.
-
-User query: "{text_input}"
-
-Respond ONLY with "IN" or "OUT". No explanation."""
-    try:
-        response = await client.chat.completions.create(
-            model=settings.ORCHESTRATOR_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=5
-        )
-        verdict = response.choices[0].message.content.strip().upper()
-        return "OUT" not in verdict
-    except Exception:
-        # Fallback to IN to avoid blocking on API errors
-        return True
 
 
 async def route_and_stream(text_input: str, session_id: str, user_id: str):
     """
     Shared orchestration logic: routes query through agents and yields
     text tokens from the synthesis stream.
+
+    Performance design: greetings are handled with 1 LLM call (streaming response).
+    Scientific queries use 1 combined routing call + agent + synthesis = 3 calls total.
+    Out-of-domain queries are rejected instantly from the combined routing call output.
     """
-    # Check domain limits
-    in_domain = await classify_domain(text_input)
-    if not in_domain:
-        is_ar = bool(re.search(r"[\u0600-\u06FF]", text_input))
-        if is_ar:
-            refusal = (
-                "عذراً، هذا السؤال خارج نطاق تخصصي العلمي. 🧪\n\n"
-                "أنا نظام تشغيل ذكاء اصطناعي علمي متخصص حصرياً في **اكتشاف الأدوية، التحليل الكيميائي، والآليات الطبية الحيوية**. "
-                "لا يمكنني الإجابة على الأسئلة المتعلقة بالقوانين، المحاماة، الطب السريري الشخصي، أو أي مجالات عامة أخرى.\n\n"
-                "**مجالات تخصصي تشمل:**\n"
-                "1. 🧬 **النواة الحيوية**: دراسة المسارات البيولوجية، آليات الأمراض، والبروتينات المستهدفة.\n"
-                "2. 🧪 **النواة الكيميائية**: البحث عن المركبات المتشابهة وتوقع الخصائص السمية والحيوية (SMILES & ADMET).\n"
-                "3. 🤖 **منسق المهام العلمي**: تشغيل خطوط الفحص الافتراضي وإعادة توجيه الأدوية."
-            )
-        else:
-            refusal = (
-                "I'm sorry, this query is outside my scientific domain. 🧪\n\n"
-                "I am an AI Scientific OS specializing strictly in **Drug Discovery, Chemical Analysis, and Biomedical Mechanisms**. "
-                "I cannot assist with topics like law, clinical medicine, general advice, or other unrelated fields.\n\n"
-                "**My core capabilities include:**\n"
-                "1. 🧬 **Bioinformatics Core**: Analyzing biological pathways, disease mechanisms, and target receptors.\n"
-                "2. 🧪 **Cheminformatics Core**: Searching chemical similarity, predicting ADMET properties, and molecular analysis.\n"
-                "3. 🤖 **Scientific Orchestration**: Running virtual screening pipelines for drug repurposing."
-            )
-        # Yield the tokens of the refusal response dynamically
-        for word in refusal.split(" "):
-            yield word + " "
-            await asyncio.sleep(0.02)
-        # Add to memory
-        short_memory.add_message(session_id, "user", text_input)
-        short_memory.add_message(session_id, "assistant", refusal)
-        return
+    # ── Fast path: greetings skip ALL API calls except the final streamed response ──────
     if should_skip_orchestrator(text_input):
         chat_history = short_memory.get_history(session_id, limit=12)
         messages = [
@@ -430,19 +366,17 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
                 logger.warning(f"long_memory.add_entry failed: {_lm_err}")
         return
 
-    # Agent routing
-    if session_id in SESSION_MEMORY:
-        for m in SESSION_MEMORY.get(session_id, [])[:]:
-            try:
-                short_memory.add_message(session_id, m.get("role", "user"), m.get("content", ""))
-            except Exception:
-                pass
-
-    chat_history = short_memory.get_history(session_id, limit=12)
-    messages = [{"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT}]
+    # ── Combined routing + domain classification (single LLM call) ──────────────────
+    chat_history = short_memory.get_history(session_id, limit=10)
+    messages = [{"role": "system", "content": COMBINED_ORCHESTRATOR_PROMPT}]
     for msg in chat_history:
         messages.append(msg)
     messages.append({"role": "user", "content": text_input})
+
+    target_agent = "APP_AGENT"
+    intent       = "APP_HELP"
+    entities     = {}
+    out_of_domain_reason = ""
 
     try:
         response = await client.chat.completions.create(
@@ -451,21 +385,52 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
             response_format={"type": "json_object"},
             temperature=0.0
         )
-        raw_content = response.choices[0].message.content
-        routing_output = json.loads(raw_content)
-        target_agent = routing_output.get("target_agent", "APP_AGENT")
-        intent = routing_output.get("intent", "UNKNOWN")
-        entities = routing_output.get("entities", {})
-    except Exception:
+        routing_output = json.loads(response.choices[0].message.content)
+        intent               = routing_output.get("intent", "APP_HELP")
+        target_agent         = routing_output.get("target_agent", "APP_AGENT")
+        entities             = routing_output.get("entities") or {}
+        out_of_domain_reason = routing_output.get("out_of_domain_reason", "")
+    except Exception as exc:
+        logger.warning(f"Orchestrator routing failed: {exc}. Using fallback classifier.")
         classification = orchestrator.classify_intent(text_input)
         intent_raw = (classification.get("intent") or "").lower()
-        entities = classification.get("entities") or {}
+        entities   = classification.get("entities") or {}
         if intent_raw == "chemical":
             target_agent, intent = "CHEMICAL_AGENT", "CHEMICAL_SIMILARITY"
         elif intent_raw == "medical":
             target_agent, intent = "MEDICAL_AGENT", "BIOMEDICAL_MECHANISM"
         else:
             target_agent, intent = "APP_AGENT", "APP_HELP"
+
+    # ── Handle out-of-domain inline (no extra API call needed) ───────────────────
+    if intent == "OUT_OF_DOMAIN" or target_agent == "NONE":
+        is_ar = bool(re.search(r"[\u0600-\u06FF]", text_input))
+        if is_ar:
+            refusal = (
+                "عذراً، هذا السؤال خارج نطاق تخصصي العلمي. 🧪\n\n"
+                "أنا نظام تشغيل ذكاء اصطناعي علمي متخصص حصرياً في **اكتشاف الأدوية، التحليل الكيميائي، والآليات الطبية الحيوية**. "
+                "لا يمكنني الإجابة على الأسئلة المتعلقة بالقوانين، المحاماة، الطب السريري الشخصي، أو أي مجالات عامة أخرى.\n\n"
+                "**مجالات تخصصي تشمل:**\n"
+                "1. 🧬 **النواة الحيوية**: دراسة المسارات البيولوجية، آليات الأمراض، والبروتينات المستهدفة.\n"
+                "2. 🧪 **النواة الكيميائية**: البحث عن المركبات المتشابهة وتوقع الخصائص السمية والحيوية (SMILES & ADMET).\n"
+                "3. 🤖 **منسق المهام العلمي**: تشغيل خطوط الفحص الافتراضي وإعادة توجيه الأدوية."
+            )
+        else:
+            refusal = (
+                "I'm sorry, this query is outside my scientific domain. 🧪\n\n"
+                "I am an AI Scientific OS specializing strictly in **Drug Discovery, Chemical Analysis, and Biomedical Mechanisms**. "
+                "I cannot assist with topics like law, clinical medicine, general advice, or other unrelated fields.\n\n"
+                "**My core capabilities include:**\n"
+                "1. 🧬 **Bioinformatics Core**: Analyzing biological pathways, disease mechanisms, and target receptors.\n"
+                "2. 🧪 **Cheminformatics Core**: Searching chemical similarity, predicting ADMET properties, and molecular analysis.\n"
+                "3. 🤖 **Scientific Orchestration**: Running virtual screening pipelines for drug repurposing."
+            )
+        for word in refusal.split(" "):
+            yield word + " "
+            await asyncio.sleep(0.02)
+        short_memory.add_message(session_id, "user", text_input)
+        short_memory.add_message(session_id, "assistant", refusal)
+        return
 
     tasks, task_mapping = [], []
     chemical_intents = ["CHEMICAL_SIMILARITY", "ADMET_ANALYSIS", "DRUG_REPURPOSING"]

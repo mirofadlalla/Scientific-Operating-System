@@ -10,9 +10,21 @@ from llama_index.core.schema import BaseNode
 logger = logging.getLogger(__name__)
 
 # ── Disk persistence directory (used when Weaviate is unavailable) ─────────────
-# Resolves to: ai-lixir-rag-system/storage/rag_index/
+# Fix Bug 2: Use /data (HF Spaces persistent) with fallback to local for dev
 _RAG_SYSTEM_ROOT = pathlib.Path(__file__).resolve().parent.parent
-PERSIST_DIR = str(_RAG_SYSTEM_ROOT / "storage" / "rag_index")
+_HF_PERSISTENT   = pathlib.Path("/data/rag_index")
+_LOCAL_FALLBACK  = _RAG_SYSTEM_ROOT / "storage" / "rag_index"
+
+try:
+    _HF_PERSISTENT.parent.mkdir(parents=True, exist_ok=True)
+    _test = _HF_PERSISTENT.parent / ".write_test"
+    _test.touch()
+    _test.unlink()
+    PERSIST_DIR = str(_HF_PERSISTENT)
+    logger.info(f"[Indexer] Using HF persistent storage: {PERSIST_DIR}")
+except Exception:
+    PERSIST_DIR = str(_LOCAL_FALLBACK)
+    logger.info(f"[Indexer] /data not writable — using local storage: {PERSIST_DIR}")
 
 
 class VectorIndexManager:
