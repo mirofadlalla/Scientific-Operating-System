@@ -15,7 +15,8 @@ try:
     WEAVIATE_HOST      = getattr(app_settings, "WEAVIATE_HOST", "localhost")
     WEAVIATE_PORT      = getattr(app_settings, "WEAVIATE_PORT", 8080)
     WEAVIATE_GRPC_PORT = getattr(app_settings, "WEAVIATE_GRPC_PORT", 50051)
-    EMBED_MODEL        = getattr(app_settings, "GROQ_EMBEDDING_MODEL", "nomic-embed-text-v1_5")
+    EMBEDDING_PROVIDER = getattr(app_settings, "EMBEDDING_PROVIDER", "huggingface")
+    EMBED_MODEL        = getattr(app_settings, "EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 except ImportError:
     # Standalone mode (e.g., running main.py directly)
     from pydantic_settings import BaseSettings
@@ -27,7 +28,8 @@ except ImportError:
         WEAVIATE_HOST:      str = os.getenv("WEAVIATE_HOST", "localhost")
         WEAVIATE_PORT:      int = int(os.getenv("WEAVIATE_PORT", "8080"))
         WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))
-        GROQ_EMBEDDING_MODEL: str = os.getenv("GROQ_EMBEDDING_MODEL", "nomic-embed-text-v1_5")
+        EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "huggingface")
+        EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
         class Config:
             env_file = ".env"
@@ -39,7 +41,8 @@ except ImportError:
     WEAVIATE_HOST      = _standalone.WEAVIATE_HOST
     WEAVIATE_PORT      = _standalone.WEAVIATE_PORT
     WEAVIATE_GRPC_PORT = _standalone.WEAVIATE_GRPC_PORT
-    EMBED_MODEL        = _standalone.GROQ_EMBEDDING_MODEL
+    EMBEDDING_PROVIDER = _standalone.EMBEDDING_PROVIDER
+    EMBED_MODEL        = _standalone.EMBEDDING_MODEL
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,13 +51,11 @@ except ImportError:
 EMBED_DIM   = 1536  # Kept for reference, may vary based on model
 
 
-def setup_groq_environment() -> None:
+def setup_rag_environment() -> None:
     """
     Configure LlamaIndex global defaults:
       • LLM  → Groq llama-3.3-70b-versatile
-      • Embed → OpenAI-compatible text-embedding-3-small
-
-    Both services use GROQ_API_KEY where applicable — no local model downloads needed.
+      • Embed → Provider-agnostic embedding model
     """
     if not GROQ_API_KEY:
         raise ValueError(
@@ -68,13 +69,20 @@ def setup_groq_environment() -> None:
         api_key=GROQ_API_KEY,
     )
 
-    # 2. Configure embeddings via OpenAI API (or compatible endpoint)
-    #    Using text-embedding-3-small which is a valid OpenAIEmbedding model
-    embed_model = OpenAIEmbedding(
-        model=EMBED_MODEL,
-        api_key=GROQ_API_KEY,
-        api_base=GROQ_BASE_URL,          # Use Groq's OpenAI-compatible endpoint
-        embed_batch_size=20,             # Recommended batch size
+    # 2. Configure embeddings via Factory
+    from src.embeddings import EmbeddingProviderFactory
+    
+    try:
+        from app.config import settings as app_settings
+        openai_key = getattr(app_settings, "OPENAI_API_KEY", "")
+    except ImportError:
+        openai_key = ""
+
+    embed_model = EmbeddingProviderFactory.create_embedding_model(
+        provider=EMBEDDING_PROVIDER,
+        model_name=EMBED_MODEL,
+        api_key=openai_key,
+        embed_batch_size=20
     )
 
     # 3. Set global defaults for LlamaIndex
@@ -82,4 +90,4 @@ def setup_groq_environment() -> None:
     Settings.embed_model = embed_model
 
     print(f"✅ LLM  → Groq / {ORCHESTRATOR_MODEL}")
-    print(f"✅ Embed → OpenAI-compatible / {EMBED_MODEL}  ({EMBED_DIM}-dim)")
+    print(f"✅ Embed → {EMBEDDING_PROVIDER.capitalize()} / {EMBED_MODEL}")

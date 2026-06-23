@@ -11,7 +11,9 @@ class Settings(BaseSettings):
     # Groq Whisper model for STT (no OpenAI key needed)
     GROQ_WHISPER_MODEL: str = "whisper-large-v3-turbo"
     
-    GROQ_EMBEDDING_MODEL: str = "nomic-embed-text-v1_5"
+    # Embeddings Configuration
+    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "huggingface") # openai, huggingface
+    EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
 
     # storage_dir: str = os.getenv("STORAGE_DIR", "storage")
 

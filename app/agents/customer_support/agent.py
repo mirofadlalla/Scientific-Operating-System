@@ -24,7 +24,7 @@ _rag_root = pathlib.Path(__file__).resolve().parent / "ai-lixir-rag-system"
 if str(_rag_root) not in sys.path:
     sys.path.insert(0, str(_rag_root))
 
-from src.config   import setup_groq_environment
+from src.config   import setup_rag_environment
 from src.engine   import RAGEngineBuilder
 from src.indexer  import VectorIndexManager
 from src.ingestion_service import RAGIngestionService
@@ -128,14 +128,14 @@ class CustomerSupportRAGAgent:
         except Exception:
             pass
 
-        from src.config import EMBED_MODEL, ORCHESTRATOR_MODEL
+        from src.config import EMBED_MODEL, ORCHESTRATOR_MODEL, EMBEDDING_PROVIDER
 
         return {
             "weaviate_connected": weaviate_ok,
             "index_name":        self.INDEX_NAME,
             "node_count":        node_count,
             "engine_ready":      self._ready,
-            "embed_model":       f"OpenAI-compatible/{EMBED_MODEL}",
+            "embed_model":       f"{EMBEDDING_PROVIDER}/{EMBED_MODEL}",
             "llm_model":         f"groq/{ORCHESTRATOR_MODEL}",
             "search_mode":       f"hybrid (α={self.ALPHA})",
             "top_k":             self.TOP_K,
@@ -170,9 +170,9 @@ class CustomerSupportRAGAgent:
         try:
             logger.info("[RAGAgent] Initialising Groq + Weaviate environment…")
 
-            # 1. Configure LlamaIndex globals (Groq LLM + Groq Embeddings)
+            # 1. Configure LlamaIndex globals
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, setup_groq_environment)
+            await loop.run_in_executor(None, setup_rag_environment)
 
             # 2. Connect to Weaviate and load / build the index
             self._index_manager = VectorIndexManager(index_name=self.INDEX_NAME)
