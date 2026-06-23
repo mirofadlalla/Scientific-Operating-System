@@ -40,19 +40,20 @@ except ImportError:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Groq embedding model constants
+# Embedding model constants
 # ─────────────────────────────────────────────────────────────────────────────
-GROQ_EMBED_MODEL = "llama-text-embed-v2"   # 768-dim, served at Groq's OAI endpoint
-GROQ_EMBED_DIM   = 768
+# Using text-embedding-3-small via OpenAI-compatible endpoint (valid for OpenAIEmbedding)
+EMBED_MODEL = "text-embedding-3-small"  # 1536-dim, supported by OpenAIEmbedding
+EMBED_DIM   = 1536
 
 
 def setup_groq_environment() -> None:
     """
     Configure LlamaIndex global defaults:
-      • LLM  → Groq  llama-3.3-70b-versatile
-      • Embed → Groq  llama-text-embed-v2  (via OpenAI-compatible API)
+      • LLM  → Groq llama-3.3-70b-versatile
+      • Embed → OpenAI-compatible text-embedding-3-small
 
-    Both services use the same GROQ_API_KEY — no local model downloads needed.
+    Both services use GROQ_API_KEY where applicable — no local model downloads needed.
     """
     if not GROQ_API_KEY:
         raise ValueError(
@@ -66,14 +67,13 @@ def setup_groq_environment() -> None:
         api_key=GROQ_API_KEY,
     )
 
-    # 2. Configure embeddings via Groq's OpenAI-compatible endpoint
-    #    llama-text-embed-v2 produces 768-dim vectors and is served at:
-    #    https://api.groq.com/openai/v1/embeddings
+    # 2. Configure embeddings via OpenAI API (or compatible endpoint)
+    #    Using text-embedding-3-small which is a valid OpenAIEmbedding model
     embed_model = OpenAIEmbedding(
-        model=GROQ_EMBED_MODEL,
+        model=EMBED_MODEL,
         api_key=GROQ_API_KEY,
-        api_base=GROQ_BASE_URL,          # https://api.groq.com/openai/v1
-        embed_batch_size=20,             # Groq recommends small batches
+        api_base=GROQ_BASE_URL,          # Use Groq's OpenAI-compatible endpoint
+        embed_batch_size=20,             # Recommended batch size
     )
 
     # 3. Set global defaults for LlamaIndex
@@ -81,4 +81,4 @@ def setup_groq_environment() -> None:
     Settings.embed_model = embed_model
 
     print(f"✅ LLM  → Groq / {ORCHESTRATOR_MODEL}")
-    print(f"✅ Embed → Groq / {GROQ_EMBED_MODEL}  ({GROQ_EMBED_DIM}-dim, via API)")
+    print(f"✅ Embed → OpenAI-compatible / {EMBED_MODEL}  ({EMBED_DIM}-dim)")

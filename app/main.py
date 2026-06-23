@@ -22,13 +22,57 @@ from app.orchestrator.brain import OrchestratorBrain
 from app.memory.short_term import ShortTermMemory
 from app.memory.long_term import LongTermMemory
 from app.audio import audio_processor
-from redis import Redis
-from rq import Queue
 
 logger = logging.getLogger(__name__)
 
-# Global variable to track the background RQ worker subprocess
+# Global variables
 worker_process = None
+redis_available = False
+redis_conn = None
+rq_queue = None
+
+
+def _check_redis_available() -> bool:
+    """Check if Redis is available without blocking."""
+    try:
+        from redis import Redis
+        conn = Redis(
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            db=settings.REDIS_DB,
+            socket_connect_timeout=2,
+            socket_timeout=2
+        )
+        conn.ping()
+        return True
+    except Exception:
+        return False
+
+
+def _init_redis() -> None:
+    """Initialize Redis connection and RQ queue if available."""
+    global redis_conn, rq_queue, redis_available
+    try:
+        from redis import Redis
+        from rq import Queue
+        
+        redis_conn = Redis(
+            host=settings.REDIS_HOST,
+            port=settings.REDIS_PORT,
+            db=settings.REDIS_DB,
+            socket_connect_timeout=2,
+            socket_timeout=2
+        )
+        redis_conn.ping()
+        rq_queue = Queue("default", connection=redis_conn)
+        redis_available = True
+        logger.info(f"✅ Redis connected: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+    except Exception as e:
+        redis_available = False
+        redis_conn = None
+        rq_queue = None
+        logger.warning(f"⚠️  Redis connection failed: {e}. Falling back to in-memory mode.")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # App Lifespan — startup / shutdown hooks
@@ -36,26 +80,48 @@ worker_process = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Warm-up & teardown hook for long-lived resources."""
-    global worker_process
+    global worker_process, redis_available, long_memory
     
-    # 1. Start the RQ worker process programmatically in the background
-    import subprocess
-    import sys
-    import os
-    try:
-        env = os.environ.copy()
-        # Set PYTHONPATH so the worker can import the "app" module
-        env["PYTHONPATH"] = os.getcwd()
-        redis_url = f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
-        logger.info(f"Starting RQ worker connecting to Redis: {redis_url}…")
-        worker_process = subprocess.Popen(
-            [sys.executable, "-m", "rq", "worker", "default", "--url", redis_url],
-            env=env,
-            cwd=os.getcwd()
-        )
-        logger.info("RQ worker spawned successfully in the background.")
-    except Exception as e:
-        logger.error(f"Failed to start programmatic RQ worker: {e}")
+    # Initialize Redis connection (optional)
+    _init_redis()
+    
+    # Initialize long-term memory if Redis is available
+    if redis_available:
+        try:
+            long_memory = LongTermMemory(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=settings.REDIS_DB
+            )
+            logger.info("✅ Long-term memory initialized (Redis-backed)")
+        except Exception as e:
+            logger.warning(f"Could not initialize long-term memory: {e}")
+            long_memory = None
+    else:
+        logger.info("Long-term memory skipped (Redis not available)")
+    
+    # 1. Start the RQ worker process only if Redis is available
+    if redis_available:
+        import subprocess
+        import sys
+        import os
+        try:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = os.getcwd()
+            redis_url = f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+            logger.info(f"Starting RQ worker connecting to Redis: {redis_url}…")
+            worker_process = subprocess.Popen(
+                [sys.executable, "-m", "rq", "worker", "default", "--url", redis_url],
+                env=env,
+                cwd=os.getcwd(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            logger.info("RQ worker spawned successfully in the background.")
+        except Exception as e:
+            logger.warning(f"Could not start RQ worker (Redis unavailable): {e}")
+    else:
+        logger.info("RQ worker skipped (Redis not available)")
 
     # Startup: pre-initialise the RAG engine in the background
     asyncio.create_task(rag_agent._initialise())
@@ -87,20 +153,11 @@ rag_agent      = CustomerSupportRAGAgent()   # AI-lixir docs RAG agent
 # Orchestrator + Memory
 orchestrator = OrchestratorBrain()
 short_memory = ShortTermMemory()
-long_memory  = LongTermMemory(
-    host=settings.REDIS_HOST,
-    port=settings.REDIS_PORT,
-    db=settings.REDIS_DB
-)
-SESSION_MEMORY: Dict[str, List[Dict[str, str]]] = {}
 
-# Initialize RQ connection & queue
-redis_conn = Redis(
-    host=settings.REDIS_HOST,
-    port=settings.REDIS_PORT,
-    db=settings.REDIS_DB
-)
-rq_queue = Queue("default", connection=redis_conn)
+# Long-term memory requires Redis - initialize after Redis check in lifespan
+long_memory: Optional[LongTermMemory] = None
+
+SESSION_MEMORY: Dict[str, List[Dict[str, str]]] = {}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # WebSocket connection registry — tracks active voice sessions

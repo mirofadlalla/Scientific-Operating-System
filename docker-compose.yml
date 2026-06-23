@@ -1,6 +1,43 @@
 version: '3.8'
 
 services:
+  # Redis — Message queue and cache backend
+  redis:
+    image: redis:7-alpine
+    container_name: scientific-os-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - scientific-os-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Weaviate — Vector database for RAG
+  weaviate:
+    image: semitechnologies/weaviate:latest
+    container_name: scientific-os-weaviate
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    networks:
+      - scientific-os-network
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   scientific-os:
     build:
       context: .
@@ -20,9 +57,25 @@ services:
       DRUG_REPURPOSING_URL: ${DRUG_REPURPOSING_URL:-https://RottenShadow-ailixir-drug-repurposing.hf.space}
       GENERATION_SERVICE_URL: ${GENERATION_SERVICE_URL:-https://shdwRow-ailixir-generation.hf.space}
       
+      # Redis Configuration (Docker networking)
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      
+      # Weaviate Configuration (Docker networking)
+      WEAVIATE_HOST: weaviate
+      WEAVIATE_PORT: 8080
+      WEAVIATE_GRPC_PORT: 50051
+      
       # Python Runtime Configuration
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
+    
+    depends_on:
+      redis:
+        condition: service_healthy
+      weaviate:
+        condition: service_healthy
     
     volumes:
       # Optional: Mount source code for development mode
@@ -45,3 +98,7 @@ services:
 networks:
   scientific-os-network:
     driver: bridge
+
+volumes:
+  weaviate_data:
+    driver: local

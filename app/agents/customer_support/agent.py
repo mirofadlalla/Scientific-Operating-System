@@ -133,7 +133,7 @@ class CustomerSupportRAGAgent:
             "index_name":        self.INDEX_NAME,
             "node_count":        node_count,
             "engine_ready":      self._ready,
-            "embed_model":       "groq/llama-text-embed-v2",
+            "embed_model":       "OpenAI-compatible/text-embedding-3-small",
             "llm_model":         "groq/llama-3.3-70b-versatile",
             "search_mode":       f"hybrid (α={self.ALPHA})",
             "top_k":             self.TOP_K,
