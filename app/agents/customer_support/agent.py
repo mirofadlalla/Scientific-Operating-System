@@ -83,6 +83,9 @@ class CustomerSupportRAGAgent:
         if not self._ready:
             return _UNAVAILABLE_MSG
 
+        if not self._query_engine:
+            return "The Knowledge Base is currently empty or offline. Please ingest documents first."
+
         try:
             # LlamaIndex query engines are synchronous — run in thread pool
             loop     = asyncio.get_event_loop()
@@ -222,7 +225,9 @@ class CustomerSupportRAGAgent:
                             f"[RAGAgent] Could not load index ('{exc}'). "
                             "Engine will become active after first ingestion."
                         )
-                        # No data yet — engine not ready until documents are ingested
+                        # No data yet — but system is technically ready to receive ingestions
+                        self._ready = True
+                        rag_state["ready"] = True
                         return
 
                 # 3. Build the hybrid query engine
