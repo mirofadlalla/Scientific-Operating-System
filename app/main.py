@@ -597,9 +597,16 @@ async def run_background_ingest(job_id: str, filename: str, content: bytes, stra
 def run_background_ingest_job(job_id: str, filename: str, content: bytes, strategy: str):
     """
     Synchronous wrapper for RQ worker to run the async ingestion pipeline.
+    Only used when running via RQ (Redis available).
     """
     import asyncio
-    asyncio.run(run_background_ingest(job_id, filename, content, strategy))
+    try:
+        loop = asyncio.get_running_loop()
+        # Already in event loop, use create_task instead
+        asyncio.create_task(run_background_ingest(job_id, filename, content, strategy))
+    except RuntimeError:
+        # No running loop, safe to use asyncio.run
+        asyncio.run(run_background_ingest(job_id, filename, content, strategy))
 
 
 @app.post("/rag/ingest")
@@ -637,9 +644,8 @@ async def rag_ingest(
         # Initialize status as pending
         update_job_status(job_id, "pending", "Job scheduled...", {"filename": file.filename, "strategy": strategy})
 
-        # If RQ is available, enqueue background task; otherwise run synchronously
+        # If RQ is available, enqueue background task via Redis
         if rq_queue:
-            # Enqueue background task via RQ
             rq_queue.enqueue(
                 run_background_ingest_job,
                 job_id,
@@ -652,26 +658,20 @@ async def rag_ingest(
                 "job_id": job_id,
                 "filename": file.filename,
                 "strategy": strategy,
-                "message": "Ingestion job queued (running in background)."
+                "message": "Ingestion job queued (running in background via Redis)."
             }
         else:
-            # Run ingestion synchronously (Redis/RQ unavailable)
-            logger.info(f"Redis unavailable; running ingestion synchronously for job {job_id}")
-            run_background_ingest_job(job_id, file.filename, content, strategy)
+            # Redis unavailable: schedule as async background task
+            logger.info(f"Redis unavailable; scheduling ingestion as async task for job {job_id}")
+            asyncio.create_task(run_background_ingest(job_id, file.filename, content, strategy))
             
-            job_info = ingestion_jobs.get(job_id)
-            if job_info and job_info.get("status") == "completed":
-                return {
-                    "status": "success",
-                    "job_id": job_id,
-                    "filename": file.filename,
-                    "strategy": strategy,
-                    "message": "Document ingested successfully.",
-                    "nodes_created": job_info.get("nodes_created", 0)
-                }
-            else:
-                error = job_info.get("error_message", "Unknown error") if job_info else "Ingestion failed"
-                raise HTTPException(status_code=500, detail=f"Ingestion error: {error}")
+            return {
+                "status": "success",
+                "job_id": job_id,
+                "filename": file.filename,
+                "strategy": strategy,
+                "message": "Ingestion job scheduled (running in background)."
+            }
 
     except HTTPException:
         raise
