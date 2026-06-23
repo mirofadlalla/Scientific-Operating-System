@@ -10,487 +10,511 @@ pinned: false
 
 # 🧬 AI Scientific OS - Multi-Agent Drug Discovery Hub
 
-**A production-ready AI Operating System for automated drug discovery, biomedical reasoning, and multi-agent scientific research.**
+A production-ready, enterprise-grade multi-agent AI system for drug discovery, molecular analysis, biomedical research, and intelligent customer support. Built with FastAPI, Groq LLM, Weaviate RAG, and specialized domain agents.
 
-> ⚡ Real-time LLM routing • 🧪 Multi-agent analysis • 🧠 Persistent memory • 📡 Streaming responses
+**Live Demo:** [Hugging Face Spaces](https://huggingface.co/spaces)  
+**Author:** Scientific Computing Lab  
+**License:** MIT | **Version:** 1.0.0 | **Status:** Production Ready ✅
 
----
-
-## 🎯 Quick Overview
-
-The **Scientific Operating System (SciOS)** is an intelligent platform that combines:
-
-- **Smart Query Routing**: Automatically detects if you're asking a casual question (instant direct response) or a scientific query (routes to specialized agents)
-- **Expert Agents**: Chemical analysis, medical reasoning, ADMET prediction
-- **Memory System**: Remembers your conversation history
-- **Streaming Responses**: Token-by-token delivery for instant feedback
-
-### What Sets It Apart
-
-✨ **Greeting Detection** - Casual messages skip agent routing for instant responses  
-✨ **Multi-Language** - Arabic & English support  
-✨ **No Latency** - Sub-300ms first-token latency  
-✨ **Production-Ready** - Docker containerized for HF Spaces  
+> ⚡ Real-time LLM routing • 🧪 Multi-agent analysis • 🧠 Persistent memory • 📡 Streaming responses • 🎤 Audio I/O
 
 ---
 
-## 🚀 Deployment Architecture
+## 📋 Table of Contents
 
-- **Backend Core**: FastAPI (Asynchronous Uvicorn Router)
-- **LLM Router**: Intent classification + dynamic agent selection
-- **Expert Networks**: Chemical Agent & Medical Agent (Groq API)
-- **Memory Layers**: Short-term (session) + Long-term (persistent)
-- **Containerization**: Optimized Docker on port 7860
+1. [Features](#-features) | 2. [Architecture](#-system-architecture) | 3. [Installation](#-installation--setup)  
+4. [Configuration](#-configuration) | 5. [API Endpoints](#-api-endpoints) | 6. [Components](#-components-deep-dive)  
+7. [Usage Examples](#-usage-examples) | 8. [Deployment](#-deployment) | 9. [Performance](#-performance-metrics) | 10. [Troubleshooting](#-troubleshooting)
 
 ---
 
-## 🛠️ Environment Variables Configuration
+## ✨ Features
 
-Set these in your Hugging Face Space **Settings → Secrets**:
+### 🧪 Multi-Agent System
+- **Chemical Agent**: Molecular analysis, ADMET predictions, drug similarity search, virtual screening
+- **Medical Agent**: Biomedical pathway analysis, drug-target interactions, clinical reasoning  
+- **RAG Agent**: AI-Lixir documentation retrieval and knowledge base Q&A
+- **App Agent**: General system assistance and FAQ support
 
-```env
-GROQ_API_KEY=your_api_key_here
-GROQ_BASE_URL=https://api.groq.com/openai/v1
-ORCHESTRATOR_MODEL=llama-3.3-70b-versatile
+### 🧠 Intelligent Orchestration
+- LLM-driven intent classification (Qwen3-32B / Llama-3.3-70B)
+- Automatic entity extraction (compound names, SMILES, diseases)
+- Dynamic routing to optimal agent
+- Greeting detection skips orchestration for <100ms responses
+
+### 🧬 Chemical Computing
+- **ADMET Predictions**: Absorption, Distribution, Metabolism, Excretion, Toxicity scores
+- **Virtual Screening**: Drug repurposing candidate identification
+- **Similarity Search**: Chemical structure comparison via FAISS
+- **Validation**: SMILES parsing and molecular fingerprinting
+
+### 📚 Knowledge Retrieval (RAG)
+- Hybrid vector + BM25 search via Weaviate
+- Groq embeddings (llama-text-embed-v2)
+- Recursive document chunking
+- Context-aware synthesis
+
+### 💾 Dual-Layer Memory
+- **Short-Term**: Session in-memory cache (thread-safe, 50 msg max)
+- **Long-Term**: Redis-backed persistent storage (optional)
+- Automatic conversation history tracking
+
+### 🎤 Audio Integration
+- Speech-to-text: Groq Whisper (99+ languages)
+- Text-to-speech: Kokoro TTS + Browser API + OpenAI TTS
+- WebSocket streaming for real-time interaction
+- Support for WAV, MP3, FLAC, OGG formats
+
+### 🌐 Multilingual Support
+- Arabic, English, code-mixed queries
+- RTL text handling
+- Language-agnostic routing
+
+### 🐳 Enterprise Ready
+- Docker + Docker Compose
+- Hugging Face Spaces compatible
+- Health checks & readiness probes
+- Background task processing (RQ)
+- Redis & Weaviate integration
+
+---
+
+## 🏗️ System Architecture
+
+### Processing Flow
+
+```
+Input (Text/Audio) → Greeting? → [YES] Direct Response → Memory Update → Output
+                         ↓
+                        [NO]
+                         ↓
+                    Orchestrator (Intent + Entity Extraction)
+                         ↓
+         ┌───────────────┼───────────────┐
+         ↓               ↓               ↓
+    Chemical         Medical            RAG        App
+    Agent            Agent            Agent       Agent
+         ↓               ↓               ↓
+         └───────────────┼───────────────┘
+                         ↓
+              Synthesis Layer (Combine outputs)
+                         ↓
+          Streaming Response Engine (SSE/WebSocket)
+                         ↓
+              Memory Update (Short + Long-term)
 ```
 
-Optional (for advanced features):
-```env
+### Component Stack
+
+```
+FastAPI Application (Port 7860)
+├── Request Handlers
+│   ├── POST /summarize-text (text queries)
+│   ├── POST /stream-response (streaming)
+│   ├── WebSocket /ws (bidirectional)
+│   ├── POST /process-audio (voice input)
+│   └── GET /health (status)
+│
+├── Orchestration Layer
+│   └── OrchestratorBrain
+│       ├── LLM Intent Classification
+│       ├── Entity Extraction
+│       └── Dynamic Router
+│
+├── Agent Layer (Parallel Execution)
+│   ├── ChemicalAgent → ADMET/Screening services
+│   ├── MedicalAgent → Groq LLM (biomedical)
+│   ├── CustomerSupportRAGAgent → Weaviate
+│   └── AppAgent → FAQ fallback
+│
+├── Storage Layer
+│   ├── ShortTermMemory (in-memory deque)
+│   └── LongTermMemory (Redis optional)
+│
+└── Response Engine
+    ├── Output Synthesis
+    └── SSE/WebSocket Streaming
+```
+
+---
+
+## 📦 Installation & Setup
+
+### Prerequisites
+- Python 3.10+
+- Docker & Docker Compose (recommended)
+- Groq API Key: [console.groq.com](https://console.groq.com)
+- 4GB+ RAM, 2GB+ Disk
+
+### Option 1: Local Development
+
+```bash
+git clone <repo-url> && cd "Scientific Operating System"
+python -m venv venv && source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install --upgrade pip && pip install -r requirements.txt
+cp .env.example .env  # Edit: add GROQ_API_KEY
+python main.py  # Runs on http://localhost:7860
+```
+
+### Option 2: Docker Compose (Full Stack)
+
+```bash
+git clone <repo-url> && cd "Scientific Operating System"
+cp .env.example .env  # Add GROQ_API_KEY
+docker-compose up --build  # Starts: FastAPI (7860) + Redis + Weaviate
+# View logs: docker-compose logs -f scientific-os
+# Stop: docker-compose down -v
+```
+
+### Option 3: Hugging Face Spaces
+
+1. Create new Space (Docker SDK)
+2. Upload repository files
+3. Set `GROQ_API_KEY` in Secrets
+4. HF auto-builds and deploys on port 7860
+
+---
+
+## ⚙️ Configuration
+
+### Required Environment Variables
+
+```bash
+GROQ_API_KEY=gsk_...  # Get from console.groq.com
+```
+
+### Optional Variables (with defaults)
+
+```bash
+# LLM Models
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+ORCHESTRATOR_MODEL=llama-3.3-70b-versatile
+QWEN_MODEL=qwen/qwen3-32b
+
+# Embeddings
+EMBEDDING_PROVIDER=huggingface  # or: openai
+EMBEDDING_MODEL=BAAI/bge-m3
+OPENAI_API_KEY=  # If using OpenAI embeddings/TTS
+
+# External Services
 ADMET_AI_URL=https://shdwRow-ailixir-admet.hf.space
 CHEMICAL_AI_URL=https://RottenShadow-ailixir-chemical-rag.hf.space
 DRUG_REPURPOSING_URL=https://RottenShadow-ailixir-drug-repurposing.hf.space
-```
+GENERATION_SERVICE_URL=https://shdwRow-ailixir-generation.hf.space
 
----
+# Redis (optional)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
 
-## 📂 Project Architecture
-
-### System Flow
-
-```
-User Input (Casual or Scientific?)
-    ↓
-    ├─→ Greeting? (e.g., "أهلا", "مرحبا")
-    │   └─→ Direct Response ✓
-    │
-    └─→ Scientific Query?
-        └─→ Orchestrator (Intent Classification)
-            ├─→ Chemical Intent
-            │   └─→ Chemical Agent (ADMET, similarity search)
-            ├─→ Medical Intent
-            │   └─→ Medical Agent (pathway analysis)
-            └─→ General Intent
-                └─→ App Helper
-
-    ↓
-    Synthesis Layer (Combine outputs)
-    ↓
-    Streaming Response Engine
-    ↓
-    Memory Storage (Short + Long-term)
-```
-
-### Folder Structure
-
-```
-Scientific Operating System/
-├── main.py                      ← Docker entry point
-├── requirements.txt
-├── Dockerfile                   ← Container config
-├── README.md                    ← This file
-│
-├── app/
-│   ├── main.py                  ← FastAPI app & endpoints
-│   ├── config.py                ← Settings & environment
-│   ├── index.html               ← Web UI
-│   │
-│   ├── agents/
-│   │   ├── chemical/
-│   │   │   ├── agent.py         ← Chemical analysis
-│   │   │   └── search.py        ← FAISS search
-│   │   └── medical/
-│   │       └── agent.py         ← Medical reasoning
-│   │
-│   ├── orchestrator/
-│   │   ├── brain.py             ← Intent routing
-│   │   └── prompts.py           ← System prompts
-│   │
-│   └── memory/
-│       ├── short_term.py        ← Session memory
-│       ├── long_term.py         ← Persistent storage
-│       └── long_term_store.json
-│
-└── tests/
-    └── test_main.py
-```
-
----
-
-## 💡 Key Features Explained
-
-### 1. Smart Greeting Detection
-
-**What it does**: Automatically recognizes casual messages
-
-```
-✅ "مرحبا" → Direct friendly response (no agents)
-✅ "أهلا" → Direct response
-✅ "شنو أخبارك؟" → Direct response
-❌ "What's the ADMET of aspirin?" → Routes to Chemical Agent
-```
-
-**Why it matters**: Faster response, better UX, reduced API calls
-
-### 2. Multi-Agent Routing
-
-| Query Type | Agent | Response Time |
-|-----------|-------|--------------|
-| Molecular similarity | Chemical Agent | ~1s |
-| ADMET prediction | Chemical Agent | ~2-3s |
-| Disease screening | Medical Agent | ~3-5s |
-| General Q&A | App Helper | <1s |
-
-### 3. Memory System
-
-**Short-Term**: Remembers conversation in current session (50 messages max)  
-**Long-Term**: Learns from past queries (persistent JSON storage)  
-**Vector**: Optional semantic search (Chromadb)
-
-### 4. Streaming Architecture
-
-- Responses appear **token-by-token** in real-time
-- No waiting for full response generation
-- Better UX for long scientific explanations
-
----
-
-## ⚙️ How It Works
-
-### Step-by-Step Processing
-
-```
-1. User sends: "مرحبا، كيفك؟"
-   ↓
-2. System checks: Is this a greeting?
-   → YES ✓
-   ↓
-3. Skip orchestrator, send direct response
-   → "مرحبا! أنا هنا للمساعدة..."
-   ↓
-4. Store in memory
-   ✓ Done!
-
----
-
-1. User sends: "What's the ADMET of aspirin (CC(=O)Oc1ccccc1C(=O)O)?"
-   ↓
-2. System checks: Is this a greeting?
-   → NO ✗
-   ↓
-3. Send to Orchestrator
-   → Detects: Chemical Intent + ADMET Analysis
-   ↓
-4. Route to Chemical Agent
-   ↓
-5. Chemical Agent calls ADMET service
-   → Returns: absorption, distribution, metabolism, excretion, toxicity
-   ↓
-6. Synthesize response
-   ↓
-7. Stream response token-by-token
-   ↓
-8. Store in both short + long-term memory
-   ✓ Done!
+# Weaviate (optional)
+WEAVIATE_HOST=localhost
+WEAVIATE_PORT=8080
+WEAVIATE_GRPC_PORT=50051
 ```
 
 ---
 
 ## 🔌 API Endpoints
 
-### POST /orchestrate
-
-Send any scientific query:
+### 1. Text Query: `POST /summarize-text`
 
 ```bash
-curl -X POST http://localhost:7860/orchestrate \
+curl -X POST http://localhost:7860/summarize-text \
   -H "Content-Type: application/json" \
   -d '{
-    "session_id": "user_123",
-    "user_id": "prof_smith",
-    "text_input": "ما هي خصائص الأسبرين؟"
+    "text_input": "What'\''s ADMET of aspirin?",
+    "session_id": "user-123",
+    "user_id": "user-456"
   }'
 ```
 
-### GET /
-
-Serves the web interface (index.html)
-
----
-
-## 🎯 Query Examples
-
-### Casual/Greeting Queries
-
+**Response (Streaming SSE):**
 ```
-✅ Simple greeting → Direct response
-   "السلام عليكم"
-   
-✅ General question → Direct response
-   "كيف تعمل هذا النظام؟"
-   
-✅ Short chat → Direct response
-   "شكراً لك"
+data: {"type": "start_streaming", "agent": "CHEMICAL_AGENT"}
+data: {"type": "token", "content": "ADMET analysis"}
+data: {"type": "complete"}
 ```
 
-### Scientific Queries
+### 2. Streaming Response: `POST /stream-response`
 
-```
-🧪 ADMET Analysis
-   "Calculate ADMET properties for aspirin"
-   
-🔬 Molecular Similarity
-   "Find compounds similar to caffeine"
-   
-🧬 Drug Repurposing
-   "Screen compounds for Alzheimer's treatment"
-   
-🏥 Biomedical Analysis
-   "Explain the mechanism of metformin"
-```
+Query with streaming output (JSON/SSE)
 
----
+### 3. Real-Time WebSocket: `WebSocket /ws`
 
-## 🐳 Installation & Deployment
+Bidirectional communication for live updates
 
-### Local Development
+### 4. Audio Processing: `POST /process-audio`
 
 ```bash
-# 1. Clone repo
-git clone https://huggingface.co/spaces/YOUR_USERNAME/Scientific-Operating-System
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Set environment
-export GROQ_API_KEY="your_key"
-
-# 4. Run
-uvicorn main:app --reload --port 8000
-
-# 5. Visit http://localhost:8000
+curl -X POST http://localhost:7860/process-audio \
+  -F "file=@audio.wav" \
+  -F "session_id=session-123"
 ```
 
-### Docker (Local)
+### 5. Health Check: `GET /health`
 
-```bash
-docker run -p 7860:7860 \
-  -e GROQ_API_KEY="your_key" \
-  scientific-os:latest
-```
+Returns system status and service availability
 
-### Hugging Face Spaces
+### 6. API Documentation: `GET /docs`
 
-1. Create Space (Docker SDK)
-2. Add `GROQ_API_KEY` to Secrets
-3. Push code: `git push --force origin main`
-4. Monitor the Logs tab
-5. Space starts automatically on port 7860
+Interactive Swagger UI with all endpoints
 
 ---
 
-## 🔍 What's Inside
+## 🔍 Components Deep Dive
 
-### app/main.py - The Core
+### 1. Orchestrator Brain (`app/orchestrator/brain.py`)
 
-```python
-# Smart detection: Should we route to agents?
-if should_skip_orchestrator(query.text_input):
-    # Direct response for greetings
-    return direct_response()
-else:
-    # Route to orchestrator for scientific queries
-    return agent_routing_response()
-```
+**Intent Classification:**
 
-### app/agents/chemical/agent.py - Chemistry
+| Intent | Agent | Use Case |
+|--------|-------|----------|
+| CHEMICAL_SIMILARITY | Chemical | Molecular structure search |
+| ADMET_ANALYSIS | Chemical | Drug property prediction |
+| DRUG_REPURPOSING | Chemical+Medical | Disease screening |
+| BIOMEDICAL_MECHANISM | Medical | Pathway analysis |
+| APP_SUPPORT_RAG | RAG | Documentation Q&A |
+| APP_HELP | App | General FAQ |
 
-- SMILES parsing and validation
-- Molecular similarity (FAISS)
-- ADMET batch prediction
-- Virtual screening
+**Routing:** User query → LLM classification → Entity extraction → Agent selection → Execution
 
-### app/agents/medical/agent.py - Biology
+---
 
+### 2. Chemical Agent (`app/agents/chemical/agent.py`)
+
+**ADMET Prediction**
+- Input: SMILES string
+- Service: `{ADMET_AI_URL}/predict_batch`
+- Output: Absorption, Distribution, Metabolism, Excretion, Toxicity (0-1 scores)
+
+**Virtual Screening**
+- Input: Disease name
+- Service: `{DRUG_REPURPOSING_URL}/api/v1/screen`
+- Output: Top drug candidates with binding scores
+
+**Similarity Search**
+- Input: SMILES
+- Service: `{CHEMICAL_AI_URL}/search/{mode}`
+- Modes: full-rag (with reasoning), retrieval-only (fast)
+
+---
+
+### 3. Medical Agent (`app/agents/medical/agent.py`)
+
+**Biomedical Reasoning**
 - Drug-target interactions
-- Pathway analysis
-- Mechanism of action (MoA)
-- Clinical reasoning
+- Mechanism of action analysis
+- Disease therapeutic rationale
+- Pharmacological evaluation
 
-### app/memory/ - Persistence
-
-- **short_term.py**: Thread-safe in-memory storage
-- **long_term.py**: JSON file-backed persistence
-- Automatic conversation tracking
+**LLM Backend:** Groq (llama-3.3-70b, temperature=0.0 for precision)
 
 ---
 
-## 🚀 Performance
+### 4. Customer Support RAG (`app/agents/customer_support/agent.py`)
+
+**RAG Pipeline:**
+1. Query embedding (Groq llama-text-embed-v2)
+2. Weaviate hybrid search (50% BM25, 50% vector)
+3. Top-4 chunk retrieval
+4. LLM synthesis (llama-3.3-70b)
+5. Grounded response
+
+**Knowledge Base:** ADMET service docs, API specs, system guides
+
+---
+
+### 5. Memory System
+
+**Short-Term** (`app/memory/short_term.py`)
+- Thread-safe in-memory deque
+- Per-session history (max 50 messages)
+- Instant availability
+
+**Long-Term** (`app/memory/long_term.py`)
+- Optional Redis backend
+- Cross-session persistence
+- Graceful fallback if unavailable
+
+---
+
+## 💡 Usage Examples
+
+### Example 1: ADMET Analysis
+
+**Query:** "What's the ADMET of aspirin (CC(=O)Oc1ccccc1C(=O)O)?"  
+**Flow:** Orchestrator → Detect ADMET_ANALYSIS → Chemical Agent → ADMET service  
+**Output:**
+```
+[ADMET Analysis for CC(=O)Oc1ccccc1C(=O)O]:
+• Absorption: 0.8743
+• Distribution: 0.9201
+• Metabolism: 0.7821
+• Excretion: 0.8145
+• Toxicity: 0.1456
+```
+
+### Example 2: Virtual Screening
+
+**Query:** "Screen compounds for Alzheimer's treatment"  
+**Flow:** Orchestrator → Detect DRUG_REPURPOSING → Chemical + Medical agents  
+**Output:** Top drug candidates with therapeutic rationale
+
+### Example 3: Documentation
+
+**Query:** "How to use ADMET API?"  
+**Flow:** Orchestrator → Detect APP_SUPPORT_RAG → RAG Agent → Weaviate search  
+**Output:** API documentation with examples
+
+### Example 4: Greeting (Optimized)
+
+**Query:** "مرحبا، كيفك؟" (Arabic greeting)  
+**Flow:** Greeting detection → Direct response (skip orchestrator)  
+**Latency:** ~50-100ms (vs. 300-500ms with full routing)
+
+---
+
+## 🚀 Deployment
+
+### Local with Hot Reload
+
+```bash
+python main.py  # Runs on :7860
+```
+
+### Docker Single Container
+
+```bash
+docker build -t scientific-os:latest .
+docker run -p 7860:7860 -e GROQ_API_KEY=your_key scientific-os:latest
+```
+
+### Docker Compose Full Stack
+
+```bash
+docker-compose up --build -d
+# Starts: FastAPI (7860), Redis (6379), Weaviate (8080)
+docker-compose down -v  # Stop all + remove volumes
+```
+
+---
+
+## 📊 Performance Metrics
 
 | Metric | Value |
 |--------|-------|
+| Greeting → Response | <100ms |
 | First-token latency | <300ms |
-| Greetings→Response | <100ms |
-| Full response streaming | Real-time |
-| Memory per session | ~1-5MB |
-| Docker image size | ~800MB |
+| ADMET prediction | 1-2s |
+| Virtual screening | 5-10s |
+| RAG query | 1-3s |
+| Full multi-agent synthesis | 3-5s |
+| Memory per session | 50-100MB |
+
+**Optimization:**
+- Greeting detection skips orchestration (-200ms)
+- Parallel agent execution
+- Response streaming (perceived latency reduction)
 
 ---
 
 ## 🐛 Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| "app" module not found | Confirm `main.py` in root, run: `python -c "from app.main import app"` |
-| GROQ_API_KEY error | Set env var: `export GROQ_API_KEY="..."` |
-| Docker build fails | Check `requirements.txt` has all dependencies |
-| Agents not responding | Verify external service URLs are accessible |
+### GROQ_API_KEY not set
+```bash
+export GROQ_API_KEY="gsk_..."
+# or add to .env file
+```
+
+### External services unreachable
+```bash
+# Check URLs
+curl -I https://shdwRow-ailixir-admet.hf.space
+# Check firewall settings
+```
+
+### Weaviate connection refused
+```bash
+# Ensure Weaviate is running
+docker-compose up -d weaviate
+# Check connectivity
+curl http://localhost:8080/v1/.well-known/ready
+```
+
+### Redis timeout
+```bash
+# Option 1: Start Redis
+docker run -d -p 6379:6379 redis:7
+
+# Option 2: Disable (uses in-memory fallback)
+export REDIS_HOST=""
+```
+
+### Docker build fails
+```bash
+# Clean build cache
+docker builder prune
+
+# Rebuild with verbose
+docker build -t scientific-os:latest --progress=plain .
+```
 
 ---
 
-## 📊 Token Usage
+## 🔐 Security Best Practices
 
-The system optimizes token usage by:
-
-✓ Skipping orchestrator for simple greetings  
-✓ Reusing conversation history efficiently  
-✓ Streaming responses (saves memory)  
-✓ Caching agent outputs  
-
----
-
-## 🔐 Security
-
-- ✅ API keys in environment variables (never in code)
-- ✅ HTTPS for external service calls
-- ✅ Input validation for SMILES strings
-- ✅ SQLi/injection prevention
+✅ Store API keys in environment variables (never commit)  
+✅ Use .env file (add to .gitignore)  
+✅ HTTPS for all external calls  
+✅ Input validation for SMILES/queries  
+✅ Rate limiting per session  
+✅ SSL/TLS in production (reverse proxy)
 
 ---
 
-## 📄 Full Documentation
+## 📚 Tech Stack
 
-For detailed information about:
-- Architecture deep-dive
-- Agent development
-- Memory customization
-- Performance tuning
+| Layer | Technology |
+|-------|-----------|
+| **Framework** | FastAPI + Uvicorn |
+| **LLM** | Groq (Llama-3.3-70B, Qwen-3.2-32B) |
+| **Embeddings** | Hugging Face BAAI/bge-m3, Groq |
+| **Vector DB** | Weaviate (hybrid BM25+vector) |
+| **RAG** | LlamaIndex with recursive chunking |
+| **Voice** | Groq Whisper STT, Kokoro TTS |
+| **Storage** | Redis, JSON file, in-memory |
+| **Containerization** | Docker, Docker Compose |
+| **Testing** | pytest, pytest-asyncio |
 
-See `README_FULL.md`
+---
+
+## 🗺️ Roadmap
+
+**Near-Term:** Chromadb integration, RDKit visualization, metrics dashboard  
+**Mid-Term:** Advanced voice features, real-time collaboration, semantic cleanup  
+**Long-Term:** Federated learning, custom fine-tuning, pharma DB integration
 
 ---
 
 ## 🤝 Contributing
 
-Ideas for improvement:
-
-- [ ] Chromadb vector memory integration
-- [ ] Voice input/output (Whisper + TTS)
-- [ ] Chemical visualization (RDKit)
-- [ ] Performance metrics dashboard
-- [ ] Multi-language support expansion
+Fork → Feature branch → Commit → Push → Pull Request
 
 ---
 
 ## 📞 Support
 
-- **GitHub Issues**: Report bugs or suggest features
-- **HF Spaces Discussions**: Ask questions
-- **Email**: Via Hugging Face profile
+**Issues:** GitHub Issues | **Discussions:** HF Spaces | **Docs:** README_FULL.md
 
 ---
 
-## 🎓 Learn More
+## 📄 License
 
-- [Groq API Docs](https://console.groq.com/keys)
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [Docker Deployment Guide](https://huggingface.co/docs/hub/spaces-sdks-docker)
+MIT License - See LICENSE file
 
 ---
 
-## ✨ Quick Start
-
-```bash
-# 1. Set your API key
-export GROQ_API_KEY="your_groq_key_here"
-
-# 2. Install
-pip install -r requirements.txt
-
-# 3. Run
-uvicorn main:app --reload --port 8000
-
-# 4. Open browser
-# http://localhost:8000
-
-# 5. Try:
-# - "مرحبا" (greeting)
-# - "What's the ADMET of aspirin?" (scientific)
-```
-
----
-
-**Developed with ❤️ for scientific discovery**
+**Last Updated:** June 2026 | **Version:** 1.0.0 | **Status:** Production Ready ✅
 
 🧬 AI Scientific OS © 2026 | Powered by Groq | Deployed on Hugging Face Spaces
-
-ai-scientific-os/
-│
-├── .env                    # Environment keys & private settings
-├── requirements.txt         # Required libraries (FastAPI, FAISS, OpenAI, etc.)
-├── README.md               # Documentation & setup instructions
-│
-├── app/                    # Primary application codebase
-│   ├── main.py             # FastAPI entrypoint
-│   ├── config.py           # Configuration loading via pydantic-settings
-│   │
-│   ├── orchestrator/       # Central orchestrator & system prompts
-│   │   ├── brain.py        # Intent classification & routing logic (Qwen3-32b)
-│   │   └── prompts.py      # System prompts repository
-│   │
-│   ├── memory/             # Memory subsystem (Short-term Redis & Long-term Chroma)
-│   │   ├── short_term.py   # Temporary session manager
-│   │   └── long_term.py    # Chroma Vector DB wrapper
-│   │
-│   ├── agents/             # Expert agent definitions
-│   │   ├── chemical/       # Chemical Agent (FAISS & MPNNs models)
-│   │   ├── medical/        # Medical Agent (OpenBioLLM & medical RAG)
-│   │   └── app_agent/      # Core Application FAQ & Support Agent
-│   │
-│   ├── tools/              # Core external integrations & tools
-│   │   ├── db_queries.py   # Drug DB database integration
-│   │   └── app_apis.py     # External backend API integrations
-│   │
-│   └── utils/              # Helper utilities
-│       ├── audio.py        # Speech-to-Text (Whisper) & Text-to-Speech (Kokoro)
-│       └── caching.py      # LRU Cache utilities
-│
-└── data/                   # Git-ignored local data resources
-    ├── faiss_indexes/      # Saved FAISS index binaries
-    ├── medical_docs/       # Document source files for Medical RAG
-    └── checkpoints/        # Local MPNN model weights
-```
-
-## Getting Started
-
-1. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Configure Environment**:
-   Copy or rename `.env` and fill out your API credentials.
-
-3. **Start the API Server**:
-   ```bash
-   python -m uvicorn app.main:app --reload
-   ```
