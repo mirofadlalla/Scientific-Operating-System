@@ -1,13 +1,13 @@
 import logging
+from typing import List
 from llama_index.core.embeddings import BaseEmbedding
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 logger = logging.getLogger(__name__)
 
 class EmbeddingProviderFactory:
     """
     Factory class for creating embedding providers.
-    Supports OpenAI, HuggingFace, and fallback mechanisms.
+    Supports OpenAI, HuggingFace, and robust local fallbacks.
     """
     
     @staticmethod
@@ -30,13 +30,45 @@ class EmbeddingProviderFactory:
                 
             else:
                 # Enforce huggingface as default for all non-openai requests
-                return HuggingFaceEmbedding(
-                    model_name=model_name,
-                    embed_batch_size=kwargs.get("embed_batch_size", 20)
-                )
+                try:
+                    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+                    return HuggingFaceEmbedding(
+                        model_name=model_name,
+                        embed_batch_size=kwargs.get("embed_batch_size", 20)
+                    )
+                except ImportError:
+                    logger.warning("llama_index.embeddings.huggingface not found. Falling back to SentenceTransformer.")
+                    raise ValueError("Missing HuggingFaceEmbedding module")
                 
         except Exception as e:
             logger.error(f"Failed to initialize embedding provider '{provider}': {e}")
-            logger.warning("Falling back to robust multilingual in-memory HuggingFaceEmbedding (BAAI/bge-m3).")
-            # Safe fallback for when the desired provider fails
-            return HuggingFaceEmbedding(model_name="BAAI/bge-m3")
+            logger.warning("Falling back to robust multilingual local embedding (SentenceTransformer).")
+            
+            from sentence_transformers import SentenceTransformer
+            
+            class LocalEmbedding(BaseEmbedding):
+                def __init__(self, model_name: str = "BAAI/bge-m3", **kw):
+                    super().__init__(**kw)
+                    # Bypass Pydantic validation for the raw model
+                    object.__setattr__(self, "_model", SentenceTransformer(model_name))
+                    
+                @classmethod
+                def class_name(cls) -> str:
+                    return "LocalEmbedding"
+
+                def _get_query_embedding(self, query: str) -> List[float]:
+                    return self._model.encode(query).tolist()
+
+                def _get_text_embedding(self, text: str) -> List[float]:
+                    return self._model.encode(text).tolist()
+                    
+                def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+                    return self._model.encode(texts).tolist()
+
+                async def _aget_query_embedding(self, query: str) -> List[float]:
+                    return self._get_query_embedding(query)
+
+                async def _aget_text_embedding(self, text: str) -> List[float]:
+                    return self._get_text_embedding(text)
+
+            return LocalEmbedding(model_name="BAAI/bge-m3")
