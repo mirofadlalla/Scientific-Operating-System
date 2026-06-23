@@ -11,9 +11,12 @@ class Settings(BaseSettings):
     # Groq Whisper model for STT (no OpenAI key needed)
     GROQ_WHISPER_MODEL: str = "whisper-large-v3-turbo"
     
-    # Embeddings Configuration (Fix Bug 4: default to Groq — free, multilingual, zero cold start)
-    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "groq")   # groq, openai, huggingface
-    EMBEDDING_MODEL: str    = os.getenv("EMBEDDING_MODEL",    "llama-text-embed-v2")
+    # Embeddings Configuration
+    # huggingface (default): paraphrase-multilingual-MiniLM-L12-v2 — Arabic ✅, 117MB, ~30s cold start
+    # openai: text-embedding-3-small — needs OPENAI_API_KEY
+    # NOTE: "groq" is remapped to huggingface (Groq has no embeddings API)
+    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "huggingface")
+    EMBEDDING_MODEL: str    = os.getenv("EMBEDDING_MODEL",    "intfloat/multilingual-e5-large-instruct")
 
     # storage_dir: str = os.getenv("STORAGE_DIR", "storage")
 

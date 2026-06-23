@@ -27,7 +27,7 @@ except ImportError:
         WEAVIATE_PORT:      int = int(os.getenv("WEAVIATE_PORT", "8080"))
         WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))
         EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "huggingface")
-        EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+        EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-large-instruct")
         OPENAI_API_KEY:     str = os.getenv("OPENAI_API_KEY", "")
 
         class Config:
@@ -48,11 +48,14 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # Embedding model constants
 # ─────────────────────────────────────────────────────────────────────────────
-# Embedding dimensions per provider
-# groq/llama-text-embed-v2  → 2048
-# huggingface/bge-m3         → 1024
-# huggingface/MiniLM-L12-v2  → 384
-EMBED_DIM   = 2048 if EMBEDDING_PROVIDER == "groq" else (
-              1024 if "bge-m3" in EMBED_MODEL else
-              384
+# Embedding dimensions by model
+# paraphrase-multilingual-MiniLM-L12-v2 → 384 (default)
+# BAAI/bge-m3                           → 1024
+# text-embedding-3-small (OpenAI)       → 1536
+EMBED_DIM = (
+    1024 if "e5-large"            in EMBED_MODEL else
+    1024 if "bge-m3"              in EMBED_MODEL else
+    1536 if "text-embedding-3"    in EMBED_MODEL else
+    768  if "bge-small"           in EMBED_MODEL else
+    384   # MiniLM and small models
 )
