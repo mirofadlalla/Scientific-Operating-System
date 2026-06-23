@@ -22,8 +22,13 @@ from app.orchestrator.brain import OrchestratorBrain
 from app.memory.short_term import ShortTermMemory
 from app.memory.long_term import LongTermMemory
 from app.audio import audio_processor
+from redis import Redis
+from rq import Queue
 
 logger = logging.getLogger(__name__)
+
+# Global variable to track the background RQ worker subprocess
+worker_process = None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # App Lifespan — startup / shutdown hooks
@@ -31,10 +36,40 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Warm-up & teardown hook for long-lived resources."""
+    global worker_process
+    
+    # 1. Start the RQ worker process programmatically in the background
+    import subprocess
+    import sys
+    import os
+    try:
+        env = os.environ.copy()
+        # Set PYTHONPATH so the worker can import the "app" module
+        env["PYTHONPATH"] = os.getcwd()
+        redis_url = f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+        logger.info(f"Starting RQ worker connecting to Redis: {redis_url}…")
+        worker_process = subprocess.Popen(
+            [sys.executable, "-m", "rq", "worker", "default", "--url", redis_url],
+            env=env,
+            cwd=os.getcwd()
+        )
+        logger.info("RQ worker spawned successfully in the background.")
+    except Exception as e:
+        logger.error(f"Failed to start programmatic RQ worker: {e}")
+
     # Startup: pre-initialise the RAG engine in the background
     asyncio.create_task(rag_agent._initialise())
     yield
-    # Shutdown: release Weaviate connection
+    # Shutdown: release Weaviate connection and terminate worker
+    if worker_process:
+        try:
+            logger.info("Terminating background RQ worker…")
+            worker_process.terminate()
+            worker_process.wait(timeout=5)
+            logger.info("RQ worker terminated.")
+        except Exception as e:
+            logger.error(f"Error terminating RQ worker: {e}")
+
     await rag_agent.close()
 
 app = FastAPI(title="AI Scientific OS — Voice Core", lifespan=lifespan)
@@ -58,6 +93,14 @@ long_memory  = LongTermMemory(
     db=settings.REDIS_DB
 )
 SESSION_MEMORY: Dict[str, List[Dict[str, str]]] = {}
+
+# Initialize RQ connection & queue
+redis_conn = Redis(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB
+)
+rq_queue = Queue("default", connection=redis_conn)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # WebSocket connection registry — tracks active voice sessions
@@ -235,14 +278,17 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
         short_memory.add_message(session_id, "assistant", refusal)
         return
     if should_skip_orchestrator(text_input):
-        direct_prompt = f"""
-        The user sent a casual message or greeting. Provide a warm, friendly response.
-        User message: "{text_input}"
-        Respond in the same language they used (Arabic or English) briefly.
-        """
+        chat_history = short_memory.get_history(session_id, limit=12)
+        messages = [
+            {"role": "system", "content": "The user sent a casual message or greeting. Provide a warm, friendly response. Respond in the same language they used (Arabic or English) briefly. Keep the conversation history in context."}
+        ]
+        for msg in chat_history:
+            messages.append(msg)
+        messages.append({"role": "user", "content": text_input})
+
         stream = await client.chat.completions.create(
             model=settings.ORCHESTRATOR_MODEL,
-            messages=[{"role": "user", "content": direct_prompt}],
+            messages=messages,
             temperature=0.7,
             stream=True
         )
@@ -264,7 +310,7 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
             except Exception:
                 pass
 
-    chat_history = short_memory.get_history(session_id, limit=6)
+    chat_history = short_memory.get_history(session_id, limit=12)
     messages = [{"role": "system", "content": ORCHESTRATOR_SYSTEM_PROMPT}]
     for msg in chat_history:
         messages.append(msg)
@@ -346,17 +392,20 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
     else:
         agent_raw_output = "[App System Context]: Standard greeting or help request."
 
-    synthesis_prompt = f"""
-    User Input Question: "{text_input}"
-    Retrieved Lab Data: "{agent_raw_output}"
-
-    Synthesize an expert, polished response in the user's conversational language.
-    Provide a unified, highly professional explanation.
-    """
+    chat_history = short_memory.get_history(session_id, limit=12)
+    messages = [
+        {"role": "system", "content": "You are a scientific AI OS assistant. Synthesize a professional, unified answer in the user's conversational language based on the retrieved lab data and the conversation history."}
+    ]
+    for msg in chat_history:
+        messages.append(msg)
+    messages.append({
+        "role": "user",
+        "content": f"User Input Question: \"{text_input}\"\nRetrieved Lab Data: \"{agent_raw_output}\""
+    })
 
     stream = await client.chat.completions.create(
         model=settings.ORCHESTRATOR_MODEL,
-        messages=[{"role": "user", "content": synthesis_prompt}],
+        messages=messages,
         temperature=0.3,
         stream=True
     )
@@ -485,9 +534,16 @@ async def run_background_ingest(job_id: str, filename: str, content: bytes, stra
         })
 
 
+def run_background_ingest_job(job_id: str, filename: str, content: bytes, strategy: str):
+    """
+    Synchronous wrapper for RQ worker to run the async ingestion pipeline.
+    """
+    import asyncio
+    asyncio.run(run_background_ingest(job_id, filename, content, strategy))
+
+
 @app.post("/rag/ingest")
 async def rag_ingest(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     strategy: str    = Form(default="markdown"),
 ):
@@ -521,13 +577,13 @@ async def rag_ingest(
         # Initialize status as pending
         update_job_status(job_id, "pending", "Job scheduled...", {"filename": file.filename, "strategy": strategy})
 
-        # Add background task
-        background_tasks.add_task(
-            run_background_ingest,
-            job_id=job_id,
-            filename=file.filename,
-            content=content,
-            strategy=strategy
+        # Enqueue background task via RQ
+        rq_queue.enqueue(
+            run_background_ingest_job,
+            job_id,
+            file.filename,
+            content,
+            strategy
         )
 
         return {

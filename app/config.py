@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
     REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
 
+    # Weaviate Vector DB Configuration
+    WEAVIATE_HOST: str = os.getenv("WEAVIATE_HOST", "localhost")
+    WEAVIATE_PORT: int = int(os.getenv("WEAVIATE_PORT", "8080"))
+    WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))
+
     class Config:
         env_file = ".env"
 

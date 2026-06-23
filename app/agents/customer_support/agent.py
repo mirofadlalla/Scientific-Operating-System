@@ -111,7 +111,12 @@ class CustomerSupportRAGAgent:
         weaviate_ok = False
         node_count  = 0
         try:
-            client = weaviate.connect_to_local()
+            from src.config import WEAVIATE_HOST, WEAVIATE_PORT, WEAVIATE_GRPC_PORT
+            client = weaviate.connect_to_local(
+                host=WEAVIATE_HOST,
+                port=WEAVIATE_PORT,
+                grpc_port=WEAVIATE_GRPC_PORT
+            )
             weaviate_ok = client.is_ready()
             # Try to get approximate object count
             try:

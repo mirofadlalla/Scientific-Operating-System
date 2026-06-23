@@ -17,9 +17,13 @@ class VectorIndexManager:
         self.index_name = index_name
         print("Connecting to Weaviate instance...")
         
-        # Connect to a local embedded Weaviate instance.
-        # Note: In production, use weaviate.connect_to_weaviate_cloud() or connect_to_custom()
-        self.client = weaviate.connect_to_local()
+        # Connect to a local or remote Weaviate instance based on config.
+        from src.config import WEAVIATE_HOST, WEAVIATE_PORT, WEAVIATE_GRPC_PORT
+        self.client = weaviate.connect_to_local(
+            host=WEAVIATE_HOST,
+            port=WEAVIATE_PORT,
+            grpc_port=WEAVIATE_GRPC_PORT
+        )
         
     def _get_vector_store(self) -> WeaviateVectorStore:
         """

@@ -35,7 +35,12 @@ class RAGIngestionService:
     # ── Weaviate connection ──────────────────────────────────────────────────
     def _get_client(self) -> weaviate.WeaviateClient:
         if self._client is None:
-            self._client = weaviate.connect_to_local()
+            from src.config import WEAVIATE_HOST, WEAVIATE_PORT, WEAVIATE_GRPC_PORT
+            self._client = weaviate.connect_to_local(
+                host=WEAVIATE_HOST,
+                port=WEAVIATE_PORT,
+                grpc_port=WEAVIATE_GRPC_PORT
+            )
         return self._client
 
     def _get_vector_store(self) -> WeaviateVectorStore:

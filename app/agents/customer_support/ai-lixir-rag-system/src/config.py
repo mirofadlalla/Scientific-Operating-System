@@ -12,6 +12,9 @@ try:
     GROQ_API_KEY       = app_settings.GROQ_API_KEY
     GROQ_BASE_URL      = app_settings.GROQ_BASE_URL
     ORCHESTRATOR_MODEL = app_settings.ORCHESTRATOR_MODEL
+    WEAVIATE_HOST      = getattr(app_settings, "WEAVIATE_HOST", "localhost")
+    WEAVIATE_PORT      = getattr(app_settings, "WEAVIATE_PORT", 8080)
+    WEAVIATE_GRPC_PORT = getattr(app_settings, "WEAVIATE_GRPC_PORT", 50051)
 except ImportError:
     # Standalone mode (e.g., running main.py directly)
     from pydantic_settings import BaseSettings
@@ -20,6 +23,9 @@ except ImportError:
         GROQ_API_KEY:       str = os.getenv("GROQ_API_KEY", "")
         GROQ_BASE_URL:      str = "https://api.groq.com/openai/v1"
         ORCHESTRATOR_MODEL: str = "llama-3.3-70b-versatile"
+        WEAVIATE_HOST:      str = os.getenv("WEAVIATE_HOST", "localhost")
+        WEAVIATE_PORT:      int = int(os.getenv("WEAVIATE_PORT", "8080"))
+        WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))
 
         class Config:
             env_file = ".env"
@@ -28,6 +34,9 @@ except ImportError:
     GROQ_API_KEY       = _standalone.GROQ_API_KEY
     GROQ_BASE_URL      = _standalone.GROQ_BASE_URL
     ORCHESTRATOR_MODEL = _standalone.ORCHESTRATOR_MODEL
+    WEAVIATE_HOST      = _standalone.WEAVIATE_HOST
+    WEAVIATE_PORT      = _standalone.WEAVIATE_PORT
+    WEAVIATE_GRPC_PORT = _standalone.WEAVIATE_GRPC_PORT
 
 
 # ─────────────────────────────────────────────────────────────────────────────
