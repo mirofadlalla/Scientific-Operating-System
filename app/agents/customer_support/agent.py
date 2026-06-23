@@ -181,12 +181,17 @@ class CustomerSupportRAGAgent:
                 )
                 logger.info(f"[RAGAgent] Loaded existing index '{self.INDEX_NAME}' from Weaviate.")
             except Exception as exc:
-                logger.warning(
-                    f"[RAGAgent] Could not load index ('{exc}'). "
-                    "Engine will become active after first ingestion."
-                )
-                # No data yet — engine not ready until documents are ingested
-                return
+                import src.indexer
+                if getattr(src.indexer.VectorIndexManager, "_GLOBAL_IN_MEMORY_INDEX", None) is not None:
+                    index = src.indexer.VectorIndexManager._GLOBAL_IN_MEMORY_INDEX
+                    logger.info("[RAGAgent] Loaded existing in-memory index.")
+                else:
+                    logger.warning(
+                        f"[RAGAgent] Could not load index ('{exc}'). "
+                        "Engine will become active after first ingestion."
+                    )
+                    # No data yet — engine not ready until documents are ingested
+                    return
 
             # 3. Build the hybrid query engine
             engine_builder     = RAGEngineBuilder(index=index)

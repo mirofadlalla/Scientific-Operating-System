@@ -33,19 +33,29 @@ class RAGIngestionService:
         self._client: weaviate.WeaviateClient | None = None
 
     # ── Weaviate connection ──────────────────────────────────────────────────
-    def _get_client(self) -> weaviate.WeaviateClient:
+    def _get_client(self):
+        if getattr(self, "_client_failed", False):
+            return None
         if self._client is None:
             from src.config import WEAVIATE_HOST, WEAVIATE_PORT, WEAVIATE_GRPC_PORT
-            self._client = weaviate.connect_to_local(
-                host=WEAVIATE_HOST,
-                port=WEAVIATE_PORT,
-                grpc_port=WEAVIATE_GRPC_PORT
-            )
+            try:
+                self._client = weaviate.connect_to_local(
+                    host=WEAVIATE_HOST,
+                    port=WEAVIATE_PORT,
+                    grpc_port=WEAVIATE_GRPC_PORT
+                )
+            except Exception as e:
+                print(f"Weaviate connection failed in ingestion: {e}")
+                self._client_failed = True
+                return None
         return self._client
 
-    def _get_vector_store(self) -> WeaviateVectorStore:
+    def _get_vector_store(self):
+        client = self._get_client()
+        if client is None:
+            return None
         return WeaviateVectorStore(
-            weaviate_client=self._get_client(),
+            weaviate_client=client,
             index_name=self.index_name,
         )
 
@@ -143,12 +153,18 @@ class RAGIngestionService:
 
         # 3. Build index → embed + store in Weaviate
         vector_store    = self._get_vector_store()
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
         if status_callback:
-            status_callback("indexing", "Storing in Weaviate...")
+            status_callback("indexing", "Storing in Vector Database...")
 
-        VectorStoreIndex(nodes, storage_context=storage_context)
+        if vector_store:
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            VectorStoreIndex(nodes, storage_context=storage_context)
+        else:
+            print("Using in-memory VectorStoreIndex")
+            index = VectorStoreIndex(nodes)
+            import src.indexer
+            src.indexer.VectorIndexManager._GLOBAL_IN_MEMORY_INDEX = index
 
         return {
             "status":        "success",

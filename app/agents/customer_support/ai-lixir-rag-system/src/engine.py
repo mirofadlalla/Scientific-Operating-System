@@ -44,13 +44,27 @@ class RAGEngineBuilder:
         )
         custom_qa_prompt = PromptTemplate(custom_qa_prompt_str)
 
-        # 2. Build the query engine leveraging Weaviate's hybrid search mode
-        query_engine = self.index.as_query_engine(
-            vector_store_query_mode="hybrid",
-            alpha=alpha,
-            similarity_top_k=top_k,
-            text_qa_template=custom_qa_prompt
-        )
+        # Check if the index's vector store is Weaviate
+        from llama_index.vector_stores.weaviate import WeaviateVectorStore
+        is_weaviate = isinstance(self.index.storage_context.vector_store, WeaviateVectorStore)
+
+        if is_weaviate:
+            # 2. Build the query engine leveraging Weaviate's hybrid search mode
+            query_engine = self.index.as_query_engine(
+                vector_store_query_mode="hybrid",
+                alpha=alpha,
+                similarity_top_k=top_k,
+                text_qa_template=custom_qa_prompt
+            )
+            print("✅ Hybrid Query Engine built successfully and wired to Groq LLM.")
+        else:
+            # 2. Build standard vector query engine for in-memory store
+            print("Using standard vector search for in-memory mode.")
+            query_engine = self.index.as_query_engine(
+                vector_store_query_mode="default",
+                similarity_top_k=top_k,
+                text_qa_template=custom_qa_prompt
+            )
+            print("✅ Standard Query Engine built successfully and wired to Groq LLM.")
         
-        print("✅ Hybrid Query Engine built successfully and wired to Groq LLM.")
         return query_engine
