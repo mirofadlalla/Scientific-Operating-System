@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     
     GROQ_EMBEDDING_MODEL: str = "bge-large-en-v1.5"
 
+    # storage_dir: str = os.getenv("STORAGE_DIR", "storage")
+
     # Optional: OpenAI for high-quality TTS (alloy, nova, shimmer…)
     # If not set, the browser's SpeechSynthesis API is used instead
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
