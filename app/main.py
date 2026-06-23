@@ -519,20 +519,23 @@ def update_job_status(job_id: str, status: str, message: str = "", extra_data: d
 
     ingestion_jobs[job_id] = data
 
+    # Sync to Redis if available (graceful fallback if not)
     try:
-        if long_memory.is_redis:
+        if long_memory and hasattr(long_memory, 'is_redis') and long_memory.is_redis:
             long_memory.redis_client.set(f"rag:job:{job_id}", json.dumps(data), ex=3600)  # expires in 1 hour
     except Exception as e:
-        logger.error(f"Failed to sync job status to Redis: {e}")
+        logger.warning(f"Could not sync job status to Redis: {e} — Using in-memory storage.")
 
 def get_job_status(job_id: str) -> dict:
+    # Try Redis first if available
     try:
-        if long_memory.is_redis:
+        if long_memory and hasattr(long_memory, 'is_redis') and long_memory.is_redis:
             val = long_memory.redis_client.get(f"rag:job:{job_id}")
             if val:
                 return json.loads(val)
     except Exception as e:
-        logger.error(f"Failed to fetch job status from Redis: {e}")
+        logger.warning(f"Could not fetch job status from Redis: {e}")
+    # Fall back to in-memory storage
     return ingestion_jobs.get(job_id, {"status": "unknown", "message": "Job not found"})
 
 
@@ -634,22 +637,41 @@ async def rag_ingest(
         # Initialize status as pending
         update_job_status(job_id, "pending", "Job scheduled...", {"filename": file.filename, "strategy": strategy})
 
-        # Enqueue background task via RQ
-        rq_queue.enqueue(
-            run_background_ingest_job,
-            job_id,
-            file.filename,
-            content,
-            strategy
-        )
-
-        return {
-            "status": "success",
-            "job_id": job_id,
-            "filename": file.filename,
-            "strategy": strategy,
-            "message": "Ingestion job started in background."
-        }
+        # If RQ is available, enqueue background task; otherwise run synchronously
+        if rq_queue:
+            # Enqueue background task via RQ
+            rq_queue.enqueue(
+                run_background_ingest_job,
+                job_id,
+                file.filename,
+                content,
+                strategy
+            )
+            return {
+                "status": "success",
+                "job_id": job_id,
+                "filename": file.filename,
+                "strategy": strategy,
+                "message": "Ingestion job queued (running in background)."
+            }
+        else:
+            # Run ingestion synchronously (Redis/RQ unavailable)
+            logger.info(f"Redis unavailable; running ingestion synchronously for job {job_id}")
+            run_background_ingest_job(job_id, file.filename, content, strategy)
+            
+            job_info = ingestion_jobs.get(job_id)
+            if job_info and job_info.get("status") == "completed":
+                return {
+                    "status": "success",
+                    "job_id": job_id,
+                    "filename": file.filename,
+                    "strategy": strategy,
+                    "message": "Document ingested successfully.",
+                    "nodes_created": job_info.get("nodes_created", 0)
+                }
+            else:
+                error = job_info.get("error_message", "Unknown error") if job_info else "Ingestion failed"
+                raise HTTPException(status_code=500, detail=f"Ingestion error: {error}")
 
     except HTTPException:
         raise
