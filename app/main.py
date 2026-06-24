@@ -293,19 +293,30 @@ Your tasks:
 
 Available agents:
   CHEMICAL_AGENT  → intents: CHEMICAL_SIMILARITY | ADMET_ANALYSIS | DRUG_REPURPOSING
-      Use for: SMILES, chemical structures, ADMET properties, molecular similarity, virtual screening.
+      Use for: SMILES, chemical structures, ADMET properties, molecular similarity, virtual screening,
+               questions about how ADMET works, MPNN models, CPU/GPU usage in chemistry pipelines,
+               any technical question about the chemical analysis system.
   MEDICAL_AGENT   → intent: BIOMEDICAL_MECHANISM
-      Use for: biological pathways, drug-target interactions, clinical reasoning, pharmacology.
+      Use for: biological pathways, drug-target interactions, clinical reasoning, pharmacology,
+               disease mechanisms, proteins, receptors, biomarkers, genomics, enzymes.
   RAG_AGENT       → intent: APP_SUPPORT_RAG
-      Use for: questions about AI-lixir features, API docs, how-to guides, system documentation.
+      Use for: questions about AI-lixir features, API docs, how-to guides, system documentation,
+               "who built this", "who is your master/creator/owner", "what is AI-lixir",
+               questions about the platform, its capabilities, or its team.
   APP_AGENT       → intent: APP_HELP
       Use for: greetings, casual chat, short replies, "who are you", "what can you do", thank-yous,
                any ambiguous message that does NOT clearly fit the scientific agents above.
 
-Out-of-domain (use intent OUT_OF_DOMAIN, target_agent NONE):
-  ONLY if the query is clearly about: law, cooking, sports, politics, personal medical prescriptions,
-  unrelated coding, history, finance, weather, entertainment, or any non-scientific topic.
-  When in doubt, default to APP_AGENT — never reject greetings or short messages.
+CRITICAL ROUTING RULES:
+  - Questions about HOW the system works technically (CPU vs GPU, model architecture, inference speed,
+    pipeline design, latency) → CHEMICAL_AGENT or MEDICAL_AGENT depending on context, NOT OUT_OF_DOMAIN.
+  - Questions about WHO built the system, WHO owns it, WHO is the creator/master → RAG_AGENT (APP_SUPPORT_RAG).
+  - Questions about drugs, molecules, diseases, biology, chemistry → ALWAYS route to scientific agents,
+    even if phrased casually or mixed with Arabic.
+  - When the topic is REMOTELY related to drug discovery, cheminformatics, or biomedical science → NEVER OUT_OF_DOMAIN.
+  - OUT_OF_DOMAIN is ONLY for topics with ZERO connection to science: pure law questions, cooking recipes,
+    sports scores, celebrity gossip, weather forecasts, political opinions, financial advice.
+  - When in doubt → APP_AGENT. NEVER reject science-adjacent questions.
 
 Respond ONLY with a raw JSON object (no markdown, no explanation):
 {
@@ -333,10 +344,12 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
             {"role": "system", "content": (
                 "You are AI-lixir, a friendly and knowledgeable AI Scientific Operating System "
                 "specializing in Drug Discovery, Cheminformatics, and Biomedical Research. "
+                "You were built by Omar Fadlallah, an AI Engineer and CS student at Mansoura University, Egypt. "
                 "The user has sent a casual message, greeting, or conversational input. "
                 "Respond warmly and helpfully in the SAME language the user used (Arabic or English). "
                 "Be concise and natural. If it's a greeting, introduce yourself briefly and invite them "
                 "to ask about drug discovery, molecular analysis, ADMET predictions, or biomedical topics. "
+                "If asked who built you, who your master/creator/owner is: Omar Fadlallah. "
                 "Never say you cannot help with greetings — always engage positively."
             )}
         ]
@@ -434,7 +447,9 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
 
     tasks, task_mapping = [], []
     chemical_intents = ["CHEMICAL_SIMILARITY", "ADMET_ANALYSIS", "DRUG_REPURPOSING"]
-    if intent in chemical_intents or target_agent == "CHEMICAL_AGENT":
+    # Only call chemical agent if there's actual molecular data to process
+    has_chemical_data = entities.get("smiles") or entities.get("compound")
+    if (intent in chemical_intents or target_agent == "CHEMICAL_AGENT") and has_chemical_data:
         tasks.append(chemical_agent.run(intent, entities))
         task_mapping.append("CHEMICAL")
     medical_intents = ["BIOMEDICAL_MECHANISM", "DRUG_REPURPOSING"]
@@ -450,6 +465,20 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
     if intent == "APP_SUPPORT_RAG" or target_agent == "RAG_AGENT":
         try:
             rag_output = await rag_agent.run(text_input)
+            # If RAG couldn't find info, fall through to APP_AGENT synthesis
+            no_info_phrases = [
+                "does not contain information",
+                "not in the documentation",
+                "knowledge base is currently",
+                "documentation does not",
+                "cannot find",
+                "no information"
+            ]
+            if any(phrase in rag_output.lower() for phrase in no_info_phrases):
+                logger.info("[RAG] No relevant docs found — falling back to APP_AGENT synthesis.")
+                rag_output = ""
+                target_agent = "APP_AGENT"
+                intent = "APP_HELP"
         except Exception as exc:
             rag_output = f"[RAG Agent Error]: {exc}"
 
@@ -491,8 +520,23 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
         agent_raw_output = "[App System Context]: Standard greeting or help request."
 
     chat_history = short_memory.get_history(session_id, limit=12)
+    is_arabic = bool(re.search(r'[\u0600-\u06FF]', text_input))
+    lang_instruction = "Respond in Arabic (Egyptian dialect is fine)." if is_arabic else "Respond in English."
+
     messages = [
-        {"role": "system", "content": "You are a scientific AI OS assistant. Synthesize a professional, unified answer in the user's conversational language based on the retrieved lab data and the conversation history."}
+        {"role": "system", "content": (
+            "You are AI-lixir, a scientific AI OS assistant specializing in Drug Discovery, "
+            "Cheminformatics, and Biomedical Research. "
+            "You were built by Omar Fadlallah, an AI Engineer from Egypt. "
+            "Your job: synthesize a professional, clear answer based on the retrieved lab data and conversation history. "
+            f"{lang_instruction} "
+            "Use the retrieved data to directly answer the user's question. "
+            "If the question is about how the system works technically (CPU, GPU, models, architecture), "
+            "explain it clearly based on what you know about the system's design. "
+            "NEVER say the question is outside your domain if it relates to science, chemistry, biology, "
+            "drug discovery, or how this AI system works. "
+            "If asked who built you or who your master/creator is: Omar Fadlallah."
+        )}
     ]
     for msg in chat_history:
         messages.append(msg)
