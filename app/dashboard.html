@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI-lixir — System Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:       #080c14;
+  --panel:    #0d1420;
+  --card:     #111927;
+  --border:   rgba(99,179,237,0.12);
+  --accent:   #3ecfcf;
+  --accent2:  #6366f1;
+  --accent3:  #f59e0b;
+  --green:    #22c55e;
+  --red:      #ef4444;
+  --orange:   #f97316;
+  --text:     #e2e8f0;
+  --muted:    #8898aa;
+  --dim:      #4a5568;
+  --mono:     'JetBrains Mono', monospace;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:24px}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(62,207,207,0.025)1px,transparent 1px),linear-gradient(90deg,rgba(62,207,207,0.025)1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+
+header{position:relative;z-index:1;display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--border)}
+.logo{display:flex;align-items:center;gap:12px}
+.logo-dot{width:10px;height:10px;background:var(--accent);border-radius:50%;box-shadow:0 0 8px var(--accent);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.logo h1{font-size:18px;font-weight:600;letter-spacing:.5px}
+.logo span{color:var(--accent);font-family:var(--mono);font-size:13px;margin-left:8px;opacity:.7}
+.status-bar{display:flex;align-items:center;gap:20px;font-size:12px;color:var(--muted);font-family:var(--mono)}
+.uptime{color:var(--green)}
+.refresh-btn{background:var(--card);border:1px solid var(--border);color:var(--accent);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-family:var(--mono);transition:all .2s}
+.refresh-btn:hover{border-color:var(--accent);background:rgba(62,207,207,.08)}
+#last-updated{color:var(--dim);font-size:11px}
+
+.grid{position:relative;z-index:1;display:grid;gap:16px}
+.grid-4{grid-template-columns:repeat(4,1fr)}
+.grid-3{grid-template-columns:repeat(3,1fr)}
+.grid-2{grid-template-columns:repeat(2,1fr)}
+@media(max-width:1100px){.grid-4{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:700px){.grid-4,.grid-3,.grid-2{grid-template-columns:1fr}}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:20px;transition:border-color .2s}
+.card:hover{border-color:rgba(62,207,207,.25)}
+.card-label{font-size:11px;font-weight:500;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.card-value{font-size:32px;font-weight:700;font-family:var(--mono);line-height:1}
+.card-sub{font-size:12px;color:var(--dim);margin-top:6px;font-family:var(--mono)}
+.accent{color:var(--accent)}
+.green{color:var(--green)}
+.red{color:var(--red)}
+.orange{color:var(--orange)}
+.indigo{color:var(--accent2)}
+
+section-title{display:block;font-size:13px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--muted);margin:28px 0 12px;border-left:3px solid var(--accent);padding-left:10px}
+
+/* Latency block */
+.latency-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+.lat-item{background:var(--panel);border-radius:8px;padding:12px;text-align:center}
+.lat-item .val{font-size:22px;font-weight:700;font-family:var(--mono);color:var(--accent)}
+.lat-item .lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+
+/* Agent distribution */
+.agent-bar-wrap{margin-top:14px;display:flex;flex-direction:column;gap:10px}
+.agent-row{display:flex;flex-direction:column;gap:4px}
+.agent-row-header{display:flex;justify-content:space-between;font-size:12px}
+.agent-name{color:var(--text);font-family:var(--mono)}
+.agent-pct{color:var(--muted)}
+.bar-track{height:6px;background:rgba(255,255,255,.05);border-radius:3px;overflow:hidden}
+.bar-fill{height:100%;border-radius:3px;transition:width .6s ease}
+.bar-chemical{background:var(--accent)}
+.bar-medical{background:var(--green)}
+.bar-rag{background:var(--accent2)}
+.bar-app{background:var(--accent3)}
+
+/* Token table */
+.token-table{width:100%;border-collapse:collapse;margin-top:12px;font-size:12px;font-family:var(--mono)}
+.token-table th{text-align:left;color:var(--muted);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--border);text-transform:uppercase;font-size:10px;letter-spacing:.6px}
+.token-table td{padding:8px;border-bottom:1px solid rgba(255,255,255,.04)}
+.token-table tr:last-child td{border-bottom:none}
+.token-table .total-row td{color:var(--accent);font-weight:600}
+
+/* Error log */
+.error-list{margin-top:10px;display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto}
+.error-item{background:rgba(239,68,68,.05);border:1px solid rgba(239,68,68,.15);border-radius:8px;padding:10px 12px;font-size:11px;font-family:var(--mono)}
+.error-ts{color:var(--dim);font-size:10px;margin-bottom:3px}
+.error-ep{color:var(--orange);margin-bottom:2px}
+.error-msg{color:var(--red);word-break:break-all}
+.no-errors{color:var(--dim);font-size:12px;font-family:var(--mono);text-align:center;padding:24px}
+
+/* Request log */
+.req-list{margin-top:10px;max-height:300px;overflow-y:auto;font-size:11px;font-family:var(--mono)}
+.req-row{display:grid;grid-template-columns:160px 1fr 60px 80px;gap:8px;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.03);align-items:center}
+.req-row:hover{background:rgba(255,255,255,.02)}
+.req-ts{color:var(--dim)}
+.req-ep{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.req-status-ok{color:var(--green)}
+.req-status-err{color:var(--red)}
+.req-lat{color:var(--muted);text-align:right}
+.req-header{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border)!important}
+
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;margin-left:8px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.empty{color:var(--dim);font-size:12px;font-family:var(--mono);padding:16px 0}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    <h1>AI-lixir <span>/ System Monitor</span></h1>
+  </div>
+  <div class="status-bar">
+    <span>Uptime: <span class="uptime" id="uptime">—</span></span>
+    <span id="last-updated">—</span>
+    <button class="refresh-btn" onclick="fetchMetrics()">↻ Refresh</button>
+  </div>
+</header>
+
+<!-- ── KPI Row ── -->
+<div class="grid grid-4" style="margin-bottom:16px">
+  <div class="card">
+    <div class="card-label">Total Requests</div>
+    <div class="card-value accent" id="req-total">—</div>
+    <div class="card-sub" id="req-success">— success</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Error Rate</div>
+    <div class="card-value" id="error-rate">—</div>
+    <div class="card-sub" id="err-breakdown">4xx: — · 5xx: —</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Active Sessions</div>
+    <div class="card-value green" id="active-sessions">—</div>
+    <div class="card-sub" id="total-sessions">— total</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Out-of-Domain</div>
+    <div class="card-value orange" id="ood-count">—</div>
+    <div class="card-sub">rejected queries</div>
+  </div>
+</div>
+
+<!-- ── Latency + Agent Dist ── -->
+<section-title>Performance & Routing</section-title>
+<div class="grid grid-2" style="margin-bottom:16px">
+
+  <div class="card">
+    <div class="card-label">Response Latency (all endpoints)</div>
+    <div class="latency-grid">
+      <div class="lat-item"><div class="val" id="lat-p50">—</div><div class="lbl">P50 ms</div></div>
+      <div class="lat-item"><div class="val" id="lat-p95">—</div><div class="lbl">P95 ms</div></div>
+      <div class="lat-item"><div class="val" id="lat-p99">—</div><div class="lbl">P99 ms</div></div>
+    </div>
+    <div style="margin-top:12px;font-size:11px;font-family:var(--mono);color:var(--muted)">
+      avg <span id="lat-avg" class="accent">—</span> ms &nbsp;·&nbsp;
+      min <span id="lat-min">—</span> ms &nbsp;·&nbsp;
+      max <span id="lat-max">—</span> ms
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Agent Routing Distribution</div>
+    <div class="card-sub" id="agent-total" style="margin-top:4px">— total calls</div>
+    <div class="agent-bar-wrap" id="agent-bars">
+      <div class="empty">No data yet</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Token Usage ── -->
+<section-title>Token Consumption</section-title>
+<div class="card" style="margin-bottom:16px">
+  <div class="card-label">LLM Token Usage — All Models</div>
+  <table class="token-table">
+    <thead>
+      <tr><th>Model</th><th>Prompt Tokens</th><th>Completion Tokens</th><th>Total</th></tr>
+    </thead>
+    <tbody id="token-tbody">
+      <tr><td colspan="4" class="empty">No token data yet</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ── Errors + Requests ── -->
+<section-title>Diagnostics</section-title>
+<div class="grid grid-2" style="margin-bottom:16px">
+
+  <div class="card">
+    <div class="card-label">Recent Errors</div>
+    <div class="error-list" id="error-list">
+      <div class="no-errors">✓ No errors recorded</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Recent Requests</div>
+    <div class="req-list">
+      <div class="req-row req-header">
+        <span>Time</span><span>Endpoint</span><span>Status</span><span>Latency</span>
+      </div>
+      <div id="req-log">
+        <div class="empty">No requests yet</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const fmt = n => (n === undefined || n === null) ? '—' : n.toLocaleString();
+const fmtMs = n => n ? n + ' ms' : '—';
+
+const AGENT_COLORS = {
+  CHEMICAL_AGENT: 'bar-chemical',
+  MEDICAL_AGENT:  'bar-medical',
+  RAG_AGENT:      'bar-rag',
+  APP_AGENT:      'bar-app',
+};
+
+async function fetchMetrics() {
+  const btn = document.querySelector('.refresh-btn');
+  btn.innerHTML = '↻ <span class="spinner"></span>';
+
+  try {
+    const [snap, reqs] = await Promise.all([
+      fetch('/metrics').then(r => r.json()),
+      fetch('/metrics/requests?limit=50').then(r => r.json()),
+    ]);
+
+    // ── KPIs
+    document.getElementById('req-total').textContent   = fmt(snap.requests.total);
+    document.getElementById('req-success').textContent = `${fmt(snap.requests.success)} success`;
+
+    const errRate = snap.requests.error_rate;
+    const errEl = document.getElementById('error-rate');
+    errEl.textContent = errRate + '%';
+    errEl.className = 'card-value ' + (errRate > 5 ? 'red' : errRate > 1 ? 'orange' : 'green');
+    document.getElementById('err-breakdown').textContent =
+      `4xx: ${fmt(snap.requests.errors_4xx)} · 5xx: ${fmt(snap.requests.errors_5xx)}`;
+
+    document.getElementById('active-sessions').textContent = fmt(snap.sessions.active);
+    document.getElementById('total-sessions').textContent  = `${fmt(snap.sessions.total)} total`;
+    document.getElementById('ood-count').textContent       = fmt(snap.requests.out_of_domain);
+    document.getElementById('uptime').textContent          = snap.uptime.human;
+
+    // ── Latency
+    const lat = snap.latency;
+    document.getElementById('lat-p50').textContent = fmtMs(lat.p50);
+    document.getElementById('lat-p95').textContent = fmtMs(lat.p95);
+    document.getElementById('lat-p99').textContent = fmtMs(lat.p99);
+    document.getElementById('lat-avg').textContent = lat.avg || '—';
+    document.getElementById('lat-min').textContent = lat.min || '—';
+    document.getElementById('lat-max').textContent = lat.max || '—';
+
+    // ── Agent distribution
+    const agents = snap.agents;
+    document.getElementById('agent-total').textContent = `${fmt(agents.total_calls)} total calls`;
+    const barsEl = document.getElementById('agent-bars');
+    const dist = agents.distribution || {};
+    const agentKeys = Object.keys(dist);
+    if (agentKeys.length === 0) {
+      barsEl.innerHTML = '<div class="empty">No agent calls yet</div>';
+    } else {
+      barsEl.innerHTML = agentKeys.map(agent => {
+        const d = dist[agent];
+        const colorClass = AGENT_COLORS[agent] || 'bar-app';
+        const latInfo = (agents.latency || {})[agent];
+        const latStr = latInfo ? ` · p50 ${latInfo.p50}ms` : '';
+        return `<div class="agent-row">
+          <div class="agent-row-header">
+            <span class="agent-name">${agent}</span>
+            <span class="agent-pct">${d.count} calls (${d.pct}%)${latStr}</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill ${colorClass}" style="width:${d.pct}%"></div></div>
+        </div>`;
+      }).join('');
+    }
+
+    // ── Token table
+    const tokens = snap.tokens || {};
+    const tbody = document.getElementById('token-tbody');
+    const modelKeys = Object.keys(tokens).filter(k => k !== '__all__');
+    if (modelKeys.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">No token data yet — tokens are recorded from LLM responses</td></tr>';
+    } else {
+      const rows = modelKeys.map(m => {
+        const t = tokens[m];
+        return `<tr>
+          <td style="color:var(--accent);font-family:var(--mono)">${m}</td>
+          <td>${fmt(t.prompt)}</td>
+          <td>${fmt(t.completion)}</td>
+          <td>${fmt(t.total)}</td>
+        </tr>`;
+      }).join('');
+      const all = tokens['__all__'] || {};
+      tbody.innerHTML = rows + `<tr class="total-row">
+        <td>TOTAL</td>
+        <td>${fmt(all.prompt)}</td>
+        <td>${fmt(all.completion)}</td>
+        <td>${fmt(all.total)}</td>
+      </tr>`;
+    }
+
+    // ── Error log
+    const errList = document.getElementById('error-list');
+    const errors = (snap.errors.recent || []).slice().reverse();
+    if (errors.length === 0) {
+      errList.innerHTML = '<div class="no-errors">✓ No errors recorded</div>';
+    } else {
+      errList.innerHTML = errors.map(e => `<div class="error-item">
+        <div class="error-ts">${e.ts}</div>
+        <div class="error-ep">${e.endpoint || '—'}</div>
+        <div class="error-msg">${e.error}</div>
+      </div>`).join('');
+    }
+
+    // ── Request log
+    const reqLog = document.getElementById('req-log');
+    if (!reqs || reqs.length === 0) {
+      reqLog.innerHTML = '<div class="empty">No requests yet</div>';
+    } else {
+      reqLog.innerHTML = reqs.slice().reverse().map(r => {
+        const ok = r.status < 400;
+        return `<div class="req-row">
+          <span class="req-ts">${r.ts.slice(11,19)}</span>
+          <span class="req-ep" title="${r.endpoint}">${r.endpoint}</span>
+          <span class="${ok ? 'req-status-ok' : 'req-status-err'}">${r.status}</span>
+          <span class="req-lat">${r.latency_ms}ms</span>
+        </div>`;
+      }).join('');
+    }
+
+    document.getElementById('last-updated').textContent =
+      'Updated ' + new Date().toLocaleTimeString();
+
+  } catch (err) {
+    console.error('Metrics fetch failed:', err);
+  } finally {
+    btn.innerHTML = '↻ Refresh';
+  }
+}
+
+// Auto-refresh every 10 seconds
+fetchMetrics();
+setInterval(fetchMetrics, 10000);
+</script>
+</body>
+</html>

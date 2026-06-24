@@ -15,6 +15,7 @@ import os
 
 # Import system configuration and custom agents
 from app.config import settings
+from app import monitoring
 from app.agents.chemical.agent import ChemicalAgent
 from app.agents.medical.agent import MedicalAgent
 from app.agents.customer_support.agent import CustomerSupportRAGAgent, rag_state
@@ -146,7 +147,7 @@ from fastapi.responses import JSONResponse
 
 class ReadinessMiddleware(BaseHTTPMiddleware):
     # Paths that must always respond, even before the RAG engine finishes loading
-    _ALWAYS_ALLOW = {"/", "/rag/status", "/health", "/docs", "/openapi.json", "/redoc"}
+    _ALWAYS_ALLOW = {"/", "/rag/status", "/health", "/docs", "/openapi.json", "/redoc", "/monitor", "/metrics", "/metrics/requests"}
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -163,6 +164,27 @@ class ReadinessMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(title="AI Scientific OS — Voice Core", lifespan=lifespan)
 app.add_middleware(ReadinessMiddleware)
+
+# ── Monitoring middleware — records latency & status for every request ────────
+@app.middleware("http")
+async def monitoring_middleware(request: Request, call_next):
+    start = time.time()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception as exc:
+        monitoring.record_error(request.url.path, str(exc))
+        raise
+    finally:
+        latency_ms = round((time.time() - start) * 1000, 2)
+        monitoring.record_request(
+            endpoint=request.url.path,
+            method=request.method,
+            status_code=status_code,
+            latency_ms=latency_ms,
+        )
 
 client = AsyncOpenAI(
     base_url=settings.GROQ_BASE_URL,
@@ -369,6 +391,12 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
             if token:
                 full_reply += token
                 yield token
+        monitoring.record_agent_call("APP_AGENT", "APP_HELP", 0, success=True)
+        monitoring.record_tokens(
+            model=settings.ORCHESTRATOR_MODEL,
+            prompt_tokens=sum(len(m.get("content","")) for m in messages) // 4,
+            completion_tokens=len(full_reply) // 4,
+        )
         short_memory.add_message(session_id, "user", text_input)
         short_memory.add_message(session_id, "assistant", full_reply)
         if long_memory is not None:
@@ -417,6 +445,7 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
 
     # ── Handle out-of-domain inline (no extra API call needed) ───────────────────
     if intent == "OUT_OF_DOMAIN" or target_agent == "NONE":
+        monitoring.record_out_of_domain(out_of_domain_reason)
         is_ar = bool(re.search(r"[\u0600-\u06FF]", text_input))
         if is_ar:
             refusal = (
@@ -553,11 +582,27 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
     )
 
     full_reply = ""
+    _agent_start = time.time()
     async for chunk in stream:
         token = chunk.choices[0].delta.content or ""
         if token:
             full_reply += token
             yield token
+
+    # Track agent call latency
+    monitoring.record_agent_call(
+        agent=target_agent,
+        intent=intent,
+        latency_ms=round((time.time() - _agent_start) * 1000, 2),
+        success=True,
+    )
+    # Approximate token tracking (usage not available in streaming mode)
+    # Rough estimate: 1 token ≈ 4 chars
+    monitoring.record_tokens(
+        model=settings.ORCHESTRATOR_MODEL,
+        prompt_tokens=sum(len(m.get("content","")) for m in messages) // 4,
+        completion_tokens=len(full_reply) // 4,
+    )
 
     short_memory.add_message(session_id, "user", text_input)
     short_memory.add_message(session_id, "assistant", full_reply)
@@ -582,6 +627,26 @@ async def get_web_ui():
     html_path = os.path.join(os.path.dirname(__file__), "index.html")
     with open(html_path, "r", encoding="utf-8") as f:
         return f.read()
+
+
+@app.get("/monitor", response_class=HTMLResponse)
+async def get_dashboard():
+    """Live monitoring dashboard."""
+    html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/metrics")
+async def get_metrics():
+    """Full system metrics snapshot — consumed by the dashboard."""
+    return monitoring.get_snapshot()
+
+
+@app.get("/metrics/requests")
+async def get_recent_requests(limit: int = 50):
+    """Return the last N request log entries."""
+    return monitoring.get_recent_requests(limit=min(limit, 200))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
