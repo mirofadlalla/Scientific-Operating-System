@@ -15,11 +15,11 @@ websockets>=12.0
 # VAD / audio processing (stdlib struct + math used, numpy optional for advanced VAD)
 numpy>=1.26.2
 # ── RAG Pipeline (ai-lixir-rag-system) ───────────────────────────────────────
-llama-index-core>=0.10.0
+llama-index-core>=0.10.0,<0.12.0
 llama-index-llms-groq>=0.1.0
 llama-index-embeddings-openai>=0.1.0
-llama-index-vector-stores-weaviate>=0.1.0
-weaviate-client>=4.5.0
+llama-index-vector-stores-weaviate>=0.1.0,<0.4.0
+weaviate-client>=4.5.0,<5.0.0
 python-dotenv>=1.0.0
 llama-index-readers-file>=0.1.0
 redis>=5.0.0

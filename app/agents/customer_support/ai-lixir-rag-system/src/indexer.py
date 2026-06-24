@@ -9,6 +9,20 @@ from llama_index.core.schema import BaseNode
 
 logger = logging.getLogger(__name__)
 
+# ── Compatibility shim ────────────────────────────────────────────────────────
+# llama-index-core >=0.11 removed TextNode.get_doc_id(), but older versions of
+# llama-index-vector-stores-weaviate still call it. Patch it back at import time
+# so ANY code path that touches Weaviate works without version-pinning alone.
+try:
+    from llama_index.core.schema import TextNode as _TextNode, BaseNode as _BaseNode
+    if not hasattr(_TextNode, "get_doc_id"):
+        _TextNode.get_doc_id = lambda self: self.ref_doc_id or self.node_id
+        logger.debug("[Indexer] Patched TextNode.get_doc_id() for Weaviate compatibility.")
+    if not hasattr(_BaseNode, "get_doc_id"):
+        _BaseNode.get_doc_id = lambda self: self.ref_doc_id or self.node_id
+except Exception:
+    pass
+
 # ── Disk persistence directory (used when Weaviate is unavailable) ─────────────
 # Fix Bug 2: Use /data (HF Spaces persistent) with fallback to local for dev
 _RAG_SYSTEM_ROOT = pathlib.Path(__file__).resolve().parent.parent

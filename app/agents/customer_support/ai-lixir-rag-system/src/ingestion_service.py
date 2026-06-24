@@ -162,6 +162,12 @@ class RAGIngestionService:
             status_callback("indexing", "Storing in Vector Database...")
 
         if vector_store:
+            # Compatibility shim: llama-index-core >=0.11 removed get_doc_id() from TextNode
+            # but some weaviate vector store versions still call it. Patch it back.
+            from llama_index.core.schema import TextNode as _TextNode
+            if not hasattr(_TextNode, "get_doc_id"):
+                _TextNode.get_doc_id = lambda self: self.ref_doc_id or self.node_id
+
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             VectorStoreIndex(nodes, storage_context=storage_context)
         else:
