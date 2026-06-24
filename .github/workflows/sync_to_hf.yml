@@ -1,0 +1,35 @@
+name: 🚀 Sync to Hugging Face Spaces
+
+on:
+  push:
+    branches:
+      - main        # triggers on every push to main
+  workflow_dispatch: # allows manual trigger from GitHub Actions tab
+
+jobs:
+  sync-to-huggingface:
+    name: Push to HF Space
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout your GitHub repo (full history for clean push)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      # 2. Push to Hugging Face Spaces using your HF token
+      - name: Push to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config --global user.email "ci-bot@ailixir.ai"
+          git config --global user.name "AI-lixir CI Bot"
+
+          # Force-push current branch to HF Space main branch
+          git push --force \
+            https://OmarFadlallah:${HF_TOKEN}@huggingface.co/spaces/OmarFadlallah/Scientific-Operating-System \
+            main
+
+          echo "✅ Successfully synced to Hugging Face Space!"
