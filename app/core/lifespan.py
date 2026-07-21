@@ -21,7 +21,7 @@ from fastapi import FastAPI
 
 from app.config import settings
 from app.memory.long_term import LongTermMemory
-from app import core  # noqa — ensures core package is importable
+from app import core  # noqa
 import app.core.state as state
 from app.core.deps import rag_agent
 
@@ -80,7 +80,20 @@ async def lifespan(app: FastAPI):
         state.long_memory = LongTermMemory()
         logger.info("✅ Long-term memory initialized (JSON file-backed — Redis not available)")
 
-    # 3. RQ worker process
+    # 3. MongoDB Atlas — ping to validate credentials on startup
+    if settings.MONGODB_URI:
+        from app.database.mongodb import ping as mongo_ping
+        ok = await mongo_ping()
+        if not ok:
+            logger.warning(
+                "⚠️  MongoDB Atlas ping failed — authentication will be unavailable."
+            )
+    else:
+        logger.warning(
+            "⚠️  MONGODB_URI not set — authentication endpoints are disabled."
+        )
+
+    # 4. RQ worker process
     if state.redis_available:
         try:
             env = os.environ.copy()
@@ -100,12 +113,12 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("RQ worker skipped (Redis not available)")
 
-    # 4. Pre-warm RAG engine in the background
+    # 5. Pre-warm RAG engine in the background
     asyncio.create_task(rag_agent._initialise())
 
     yield  # ── application runs ──────────────────────────────────────────────
 
-    # 5. Shutdown
+    # 6. Shutdown
     if state.worker_process:
         try:
             logger.info("Terminating RQ worker…")
@@ -116,3 +129,8 @@ async def lifespan(app: FastAPI):
             logger.error(f"Error terminating RQ worker: {exc}")
 
     await rag_agent.close()
+
+    # 7. Close MongoDB connection pool
+    if settings.MONGODB_URI:
+        from app.database.mongodb import close as mongo_close
+        await mongo_close()

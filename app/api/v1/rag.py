@@ -11,9 +11,10 @@ import logging
 import os
 import uuid
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 import app.core.state as state
+from app.core.auth import verify_token
 from app.core.deps import rag_agent
 
 logger = logging.getLogger(__name__)
@@ -152,6 +153,7 @@ def run_background_ingest_job(
 async def rag_ingest(
     file: UploadFile = File(...),
     strategy: str = Form(default="markdown"),
+    username: str = Depends(verify_token),   # ← requires valid JWT
 ):
     """
     Upload a Markdown (.md) or plain-text (.txt) file and ingest it into the

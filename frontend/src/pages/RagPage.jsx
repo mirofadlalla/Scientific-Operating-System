@@ -23,6 +23,52 @@ const STATUS_TO_STEP = {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+// ── Login Gate ───────────────────────────────────────────────────────────────
+function LoginGate({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading,  setLoading]  = useState(false);
+  const [error,    setError]    = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!username || !password) return;
+    setLoading(true); setError('');
+    try {
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.detail || 'Invalid credentials.'); return; }
+      onLogin(data.access_token, username);
+    } catch { setError('Network error — could not reach the server.'); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <div className="login-gate">
+      <div className="login-card">
+        <div className="login-icon">🔐</div>
+        <h2>Knowledge Base Access</h2>
+        <p>Sign in to ingest documents into the RAG knowledge base.</p>
+        <form onSubmit={handleSubmit} className="login-form">
+          <input type="text" placeholder="Username" value={username}
+            onChange={e => setUsername(e.target.value)} autoComplete="username" required />
+          <input type="password" placeholder="Password" value={password}
+            onChange={e => setPassword(e.target.value)} autoComplete="current-password" required />
+          {error && <div className="login-error">⚠️ {error}</div>}
+          <button type="submit" className="upload-btn" disabled={loading}>
+            {loading ? '⟳ Signing in…' : '🔑 Sign In'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
 // ── Step pipeline UI ─────────────────────────────────────────────────────────
 function StepPipeline({ steps }) {
   return (
@@ -94,8 +140,10 @@ function LogEntry({ entry }) {
   );
 }
 
-// ── Main RAG Page ─────────────────────────────────────────────────────────────
+// ── Main RAG Page ───────────────────────────────────────────────────────────────
 export default function RagPage() {
+  const [token,        setToken]        = useState(null);
+  const [loggedInUser, setLoggedInUser] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [strategy, setStrategy]         = useState('markdown');
   const [uploading, setUploading]        = useState(false);
@@ -104,6 +152,19 @@ export default function RagPage() {
   const [log, setLog]                   = useState([]);
   const fileInputRef                    = useRef(null);
   const dropRef                         = useRef(null);
+
+  const handleLogin = (accessToken, username) => {
+    setToken(accessToken);
+    setLoggedInUser(username);
+  };
+
+  const handleLogout = () => {
+    setToken(null);
+    setLoggedInUser(null);
+  };
+
+  // Show login gate if not authenticated
+  if (!token) return <LoginGate onLogin={handleLogin} />;
 
   // Fetch KB status on mount and every 30s
   useEffect(() => {
@@ -156,7 +217,11 @@ export default function RagPage() {
     form.append('strategy', strategy);
 
     try {
-      const res    = await fetch(`${API_BASE}/rag/ingest`, { method: 'POST', body: form });
+      const res    = await fetch(`${API_BASE}/rag/ingest`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: form,
+      });
       const result = await res.json();
 
       if (!res.ok || result.status !== 'success') {
@@ -213,7 +278,13 @@ export default function RagPage() {
   return (
     <div className="rag-page">
       <div className="rag-header">
-        <h2>🗄️ Knowledge Base</h2>
+        <div className="rag-header-top">
+          <h2>🗄️ Knowledge Base</h2>
+          <div className="rag-auth-badge">
+            <span className="auth-user">👤 {loggedInUser}</span>
+            <button className="logout-btn" onClick={handleLogout}>Sign Out</button>
+          </div>
+        </div>
         <p>Upload documents to expand the RAG knowledge base. Supports Markdown (.md) and plain text (.txt).</p>
       </div>
 

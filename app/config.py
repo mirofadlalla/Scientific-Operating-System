@@ -12,16 +12,10 @@ class Settings(BaseSettings):
     GROQ_WHISPER_MODEL: str = "whisper-large-v3-turbo"
     
     # Embeddings Configuration
-    # huggingface (default): paraphrase-multilingual-MiniLM-L12-v2 — Arabic ✅, 117MB, ~30s cold start
-    # openai: text-embedding-3-small — needs OPENAI_API_KEY
-    # NOTE: "groq" is remapped to huggingface (Groq has no embeddings API)
     EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "huggingface")
     EMBEDDING_MODEL: str    = os.getenv("EMBEDDING_MODEL",    "intfloat/multilingual-e5-large-instruct")
 
-    # storage_dir: str = os.getenv("STORAGE_DIR", "storage")
-
-    # Optional: OpenAI for high-quality TTS (alloy, nova, shimmer…)
-    # If not set, the browser's SpeechSynthesis API is used instead
+    # Optional: OpenAI for high-quality TTS
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 
     # External Service URLs
@@ -43,6 +37,20 @@ class Settings(BaseSettings):
     WEAVIATE_HOST: str = os.getenv("WEAVIATE_HOST", "localhost")
     WEAVIATE_PORT: int = int(os.getenv("WEAVIATE_PORT", "8080"))
     WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))
+
+    # ── MongoDB Atlas ─────────────────────────────────────────────────────────
+    # Set these in HF Space secrets / .env:
+    #   MONGODB_URI      = mongodb+srv://user:pass@cluster.mongodb.net
+    #   MONGODB_DB_NAME  = ailixir
+    MONGODB_URI: str     = os.getenv("MONGODB_URI", "")
+    MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "ailixir")
+
+    # ── JWT ───────────────────────────────────────────────────────────────────
+    # Used to sign access tokens issued after login.
+    # Generate a strong random value: python -c "import secrets; print(secrets.token_hex(32))"
+    SECRET_KEY: str       = os.getenv("SECRET_KEY", "change-me-in-production")
+    JWT_ALGORITHM: str    = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # tokens valid for 1 hour
 
     class Config:
         env_file = ".env"
