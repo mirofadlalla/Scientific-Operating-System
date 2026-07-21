@@ -29,7 +29,10 @@ app = FastAPI(
     title="AI-lixir Scientific Operating System",
     description=(
         "AI Scientific OS for Drug Discovery — Chemical analysis, biomedical mechanisms, "
-        "RAG knowledge base, and real-time voice interaction."
+        "RAG knowledge base, and real-time voice interaction.\n\n"
+        "---\n\n"
+        "🚀 **[Live Demo (Frontend) →  https://scientific-operating-system.vercel.app/]"
+        "(https://scientific-operating-system.vercel.app/)**"
     ),
     version="2.0.0",
     lifespan=lifespan,
