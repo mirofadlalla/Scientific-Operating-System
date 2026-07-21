@@ -144,7 +144,8 @@ async def lifespan(app: FastAPI):
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 class ReadinessMiddleware(BaseHTTPMiddleware):
     # Paths that must always respond, even before the RAG engine finishes loading
@@ -164,6 +165,16 @@ class ReadinessMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 app = FastAPI(title="AI Scientific OS — Voice Core", lifespan=lifespan)
+
+# ── CORS — allow the Vercel frontend (and any origin during development) ──────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # Restrict to your Vercel URL in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.add_middleware(ReadinessMiddleware)
 
 # ── Monitoring middleware — records latency & status for every request ────────
@@ -623,19 +634,16 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
 # ──────────────────────────────────────────────────────────────────────────────
 # HTTP Routes
 # ──────────────────────────────────────────────────────────────────────────────
-@app.get("/", response_class=HTMLResponse)
-async def get_web_ui():
-    html_path = os.path.join(os.path.dirname(__file__), "index.html")
-    with open(html_path, "r", encoding="utf-8") as f:
-        return f.read()
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """Redirect HF Space root to API documentation."""
+    return RedirectResponse(url="/docs")
 
 
-@app.get("/monitor", response_class=HTMLResponse)
-async def get_dashboard():
-    """Live monitoring dashboard."""
-    html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
-    with open(html_path, "r", encoding="utf-8") as f:
-        return f.read()
+@app.get("/health")
+async def health_check():
+    """Lightweight health check — used by the frontend keep-alive ping."""
+    return {"status": "ok", "timestamp": time.time()}
 
 
 @app.get("/metrics")
