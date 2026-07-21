@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { BACKEND_URL, WS_URL } from '../config';
+import { API_BASE, WS_URL } from '../config';
 
 const SESSION_ID = 'session_' + Math.random().toString(36).slice(2, 9);
 const USER_ID    = 'user_' + Math.random().toString(36).slice(2, 9);
@@ -250,7 +250,7 @@ export default function ChatPage() {
     }, 900);
 
     try {
-      const res = await fetch(`${BACKEND_URL}/orchestrate`, {
+      const res = await fetch(`${API_BASE}/orchestrate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: SESSION_ID, user_id: USER_ID, text_input: text }),

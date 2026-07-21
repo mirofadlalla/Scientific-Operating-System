@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { BACKEND_URL } from '../config';
+import { API_BASE } from '../config';
 
 const STEP_KEYS = ['upload', 'chunk', 'embed', 'index', 'reload'];
 const STEP_LABELS = {
@@ -114,7 +114,7 @@ export default function RagPage() {
 
   const fetchKBStatus = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/rag/status`);
+      const res = await fetch(`${API_BASE}/rag/status`);
       if (res.ok) setKbStatus(await res.json());
     } catch { /* silent */ }
   };
@@ -156,7 +156,7 @@ export default function RagPage() {
     form.append('strategy', strategy);
 
     try {
-      const res    = await fetch(`${BACKEND_URL}/rag/ingest`, { method: 'POST', body: form });
+      const res    = await fetch(`${API_BASE}/rag/ingest`, { method: 'POST', body: form });
       const result = await res.json();
 
       if (!res.ok || result.status !== 'success') {
@@ -170,7 +170,7 @@ export default function RagPage() {
 
       while (!done) {
         await sleep(600);
-        const sr   = await fetch(`${BACKEND_URL}/rag/ingest/status/${jobId}`);
+        const sr   = await fetch(`${API_BASE}/rag/ingest/status/${jobId}`);
         const data = await sr.json();
         const step = STATUS_TO_STEP[data.status];
 

@@ -4,7 +4,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   RadialBarChart, RadialBar, Cell, Legend
 } from 'recharts';
-import { BACKEND_URL } from '../config';
+import { API_BASE } from '../config';
 
 const REFRESH_MS = 10_000; // auto-refresh every 10 seconds
 
@@ -205,8 +205,8 @@ export default function MonitorPage() {
   const fetchData = useCallback(async () => {
     try {
       const [snap, reqs] = await Promise.all([
-        fetch(`${BACKEND_URL}/metrics`).then(r => r.json()),
-        fetch(`${BACKEND_URL}/metrics/requests?limit=100`).then(r => r.json()),
+        fetch(`${API_BASE}/metrics`).then(r => r.json()),
+        fetch(`${API_BASE}/metrics/requests?limit=100`).then(r => r.json()),
       ]);
       setSnapshot(snap);
       setRecentReqs(Array.isArray(reqs) ? reqs : []);
