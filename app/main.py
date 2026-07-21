@@ -362,7 +362,60 @@ Respond ONLY with a raw JSON object (no markdown, no explanation):
 """
 
 
-async def route_and_stream(text_input: str, session_id: str, user_id: str):
+# ── Composite-question detection prompt ─────────────────────────────────────
+COMPOSITE_DETECTION_PROMPT = """\
+You decide whether a user message contains MULTIPLE DISTINCT questions that should be answered separately.
+
+A COMPOSITE message has two or more clearly independent topics, e.g.:
+  - "What is the ADMET of aspirin AND what are the diabetes pathways?"
+  - "Analyse compound X, also tell me about COVID-19 drug targets"
+  - "Compare ibuprofen and aspirin side effects, plus the SMILES of caffeine"
+
+A SINGLE message is NOT composite even if it mentions several properties of the SAME subject:
+  - "What are the ADMET properties and mechanism of aspirin?" → SINGLE
+  - "How does metformin work and what are its side effects?" → SINGLE
+
+IMPORTANT: Rewrite each sub-question as a complete, self-contained question (add context if needed).
+
+Return ONLY valid JSON, no markdown fences:
+{"is_composite": true,  "sub_questions": ["full question 1", "full question 2", ...]}
+or
+{"is_composite": false, "sub_questions": ["original question"]}
+"""
+
+
+async def split_composite_question(text: str) -> list[str]:
+    """
+    Returns a list of sub-questions when the input contains multiple distinct
+    scientific questions. Returns [text] unchanged when it is a single question.
+    """
+    try:
+        response = await client.chat.completions.create(
+            model=settings.ORCHESTRATOR_MODEL,
+            messages=[
+                {"role": "system", "content": COMPOSITE_DETECTION_PROMPT},
+                {"role": "user",   "content": text},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+        )
+        data = json.loads(response.choices[0].message.content)
+        parts = [q.strip() for q in data.get("sub_questions", []) if q.strip()]
+        if data.get("is_composite") and len(parts) > 1:
+            logger.info(f"[Composite] Split into {len(parts)} sub-questions: {parts}")
+            return parts
+    except Exception as exc:
+        logger.warning(f"[Composite] Detection failed: {exc} — treating as single question")
+    return [text]
+
+
+async def route_and_stream(
+    text_input: str,
+    session_id: str,
+    user_id: str,
+    allow_split: bool = True,
+    store_memory: bool = True,
+):
     """
     Shared orchestration logic: routes query through agents and yields
     text tokens from the synthesis stream.
@@ -370,6 +423,8 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
     Performance design: greetings are handled with 1 LLM call (streaming response).
     Scientific queries use 1 combined routing call + agent + synthesis = 3 calls total.
     Out-of-domain queries are rejected instantly from the combined routing call output.
+    Composite queries (multiple distinct questions) are split and each part is answered
+    independently, then combined into a single streamed response.
     """
     # ── Fast path: greetings skip ALL API calls except the final streamed response ──────
     if should_skip_orchestrator(text_input):
@@ -409,15 +464,68 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
             prompt_tokens=sum(len(m.get("content","")) for m in messages) // 4,
             completion_tokens=len(full_reply) // 4,
         )
-        short_memory.add_message(session_id, "user", text_input)
-        short_memory.add_message(session_id, "assistant", full_reply)
-        if long_memory is not None:
-            try:
-                long_memory.add_entry(session_id, f"User: {text_input}\nAssistant: {full_reply}",
-                                      metadata={"intent": "APP_HELP", "agent": "APP_AGENT"})
-            except Exception as _lm_err:
-                logger.warning(f"long_memory.add_entry failed: {_lm_err}")
+        if store_memory:
+            short_memory.add_message(session_id, "user", text_input)
+            short_memory.add_message(session_id, "assistant", full_reply)
+            if long_memory is not None:
+                try:
+                    long_memory.add_entry(session_id, f"User: {text_input}\nAssistant: {full_reply}",
+                                          metadata={"intent": "APP_HELP", "agent": "APP_AGENT"})
+                except Exception as _lm_err:
+                    logger.warning(f"long_memory.add_entry failed: {_lm_err}")
         return
+
+    # ── Composite question detection — split if multiple distinct questions ────────
+    if allow_split:
+        sub_questions = await split_composite_question(text_input)
+        if len(sub_questions) > 1:
+            is_ar = bool(re.search(r'[\u0600-\u06FF]', text_input))
+            if is_ar:
+                header = f"🔍 تم اكتشاف **{len(sub_questions)} أسئلة منفصلة**. سأجيب على كل واحدة:\n\n"
+            else:
+                header = f"🔍 Detected **{len(sub_questions)} sub-questions** — answering each:\n\n"
+            yield header
+
+            combined_answer = header
+            divider = "\n\n" + "─" * 52 + "\n"
+
+            for idx, sub_q in enumerate(sub_questions, start=1):
+                _nums = ['❶','❷','❸','❹','❺','❻','❼','❽','❾','❿']
+                label = f"**{_nums[idx - 1] if idx <= 10 else str(idx) + '.'} {sub_q}**"
+                section_header = divider + label + "\n\n"
+                yield section_header
+                combined_answer += section_header
+
+                part_answer = ""
+                async for token in route_and_stream(
+                    sub_q, session_id, user_id,
+                    allow_split=False,   # prevent infinite recursion
+                    store_memory=False,  # memory written once below
+                ):
+                    yield token
+                    part_answer += token
+
+                combined_answer += part_answer
+                separator = "\n"
+                yield separator
+                combined_answer += separator
+
+            # ── Save original question + combined answer once ──────────────────
+            if store_memory:
+                short_memory.add_message(session_id, "user", text_input)
+                short_memory.add_message(session_id, "assistant", combined_answer)
+                SESSION_MEMORY.setdefault(session_id, []).append({"role": "user",      "content": text_input})
+                SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": combined_answer})
+                if long_memory is not None:
+                    try:
+                        long_memory.add_entry(
+                            session_id,
+                            f"User: {text_input}\nAssistant: {combined_answer}",
+                            metadata={"intent": "COMPOSITE", "agent": "MULTI"},
+                        )
+                    except Exception as _lm_err:
+                        logger.warning(f"long_memory.add_entry failed: {_lm_err}")
+            return
 
     # ── Combined routing + domain classification (single LLM call) ──────────────────
     chat_history = short_memory.get_history(session_id, limit=10)
@@ -543,16 +651,17 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
         for word in rag_output.split(" "):
             yield word + " "
             await asyncio.sleep(0.008)
-        short_memory.add_message(session_id, "user", text_input)
-        short_memory.add_message(session_id, "assistant", rag_output)
-        SESSION_MEMORY.setdefault(session_id, []).append({"role": "user", "content": text_input})
-        SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": rag_output})
-        if long_memory is not None:
-            try:
-                long_memory.add_entry(session_id, f"User: {text_input}\nAssistant: {rag_output}",
-                                      metadata={"intent": intent, "agent": "RAG_AGENT"})
-            except Exception as _lm_err:
-                logger.warning(f"long_memory.add_entry failed: {_lm_err}")
+        if store_memory:
+            short_memory.add_message(session_id, "user", text_input)
+            short_memory.add_message(session_id, "assistant", rag_output)
+            SESSION_MEMORY.setdefault(session_id, []).append({"role": "user",      "content": text_input})
+            SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": rag_output})
+            if long_memory is not None:
+                try:
+                    long_memory.add_entry(session_id, f"User: {text_input}\nAssistant: {rag_output}",
+                                          metadata={"intent": intent, "agent": "RAG_AGENT"})
+                except Exception as _lm_err:
+                    logger.warning(f"long_memory.add_entry failed: {_lm_err}")
         return
 
     if chemical_output or medical_output:
@@ -616,19 +725,20 @@ async def route_and_stream(text_input: str, session_id: str, user_id: str):
         completion_tokens=len(full_reply) // 4,
     )
 
-    short_memory.add_message(session_id, "user", text_input)
-    short_memory.add_message(session_id, "assistant", full_reply)
-    SESSION_MEMORY.setdefault(session_id, []).append({"role": "user", "content": text_input})
-    SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": full_reply})
-    if long_memory is not None:
-        try:
-            long_memory.add_entry(
-                session_id,
-                f"User: {text_input}\nAssistant: {full_reply}",
-                metadata={"intent": intent, "agent": target_agent}
-            )
-        except Exception as _lm_err:
-            logger.warning(f"long_memory.add_entry failed: {_lm_err}")
+    if store_memory:
+        short_memory.add_message(session_id, "user", text_input)
+        short_memory.add_message(session_id, "assistant", full_reply)
+        SESSION_MEMORY.setdefault(session_id, []).append({"role": "user",      "content": text_input})
+        SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": full_reply})
+        if long_memory is not None:
+            try:
+                long_memory.add_entry(
+                    session_id,
+                    f"User: {text_input}\nAssistant: {full_reply}",
+                    metadata={"intent": intent, "agent": target_agent}
+                )
+            except Exception as _lm_err:
+                logger.warning(f"long_memory.add_entry failed: {_lm_err}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
