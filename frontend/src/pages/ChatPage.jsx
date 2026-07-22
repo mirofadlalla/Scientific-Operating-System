@@ -14,6 +14,27 @@ const THOUGHTS = [
 
 let currentAudio = null;
 
+// ── MIME type / format helpers ───────────────────────────────────────────────
+// Pick the best audio format the browser's MediaRecorder actually supports.
+// The format string is passed to the backend so Whisper gets the right extension.
+const PREFERRED_MIME_TYPES = [
+  { mime: 'audio/webm;codecs=opus', ext: 'webm' },
+  { mime: 'audio/webm',             ext: 'webm' },
+  { mime: 'audio/ogg;codecs=opus',  ext: 'ogg'  },
+  { mime: 'audio/ogg',              ext: 'ogg'  },
+  { mime: 'audio/mp4',              ext: 'mp4'  },
+];
+
+function pickRecorderFormat() {
+  for (const { mime, ext } of PREFERRED_MIME_TYPES) {
+    if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(mime)) {
+      return { mime, ext };
+    }
+  }
+  // Browser will decide on its own; assume webm as a last resort
+  return { mime: '', ext: 'webm' };
+}
+
 async function playGroqAudio(text, soundEnabledRef) {
   if (!soundEnabledRef.current || !text || !text.trim()) return;
   stopTTS();
@@ -211,6 +232,13 @@ export default function ChatPage() {
       } else if (msg.type === 'interrupted') {
         setVoiceProcessing(false);
         setVoiceStatus('Interrupted');
+      } else if (msg.type === 'error') {
+        // Backend sent an error (e.g. STT failed, agent crash)
+        setVoiceProcessing(false);
+        setVoiceStatus('Error');
+        setVoiceActive(false);
+        addMsg('ai', `⚠️ Voice error: ${msg.message || 'Unknown error'}`, 'error');
+        console.error('[WS Error]', msg.message);
       }
     };
   }, []);
@@ -247,15 +275,19 @@ export default function ChatPage() {
       analyserRef.current.fftSize = 256;
       source.connect(analyserRef.current);
 
-      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      const { mime: recMime, ext: recExt } = pickRecorderFormat();
+      const mrOptions = recMime ? { mimeType: recMime } : {};
+      const mr = new MediaRecorder(stream, mrOptions);
       mediaRecorderRef.current = mr;
+      // Store format so stopVoice can pass the same ext to audio_end
+      mr._recExt = recExt;
 
       mr.ondataavailable = (e) => {
         if (e.data.size === 0 || wsRef.current?.readyState !== WebSocket.OPEN) return;
         const reader = new FileReader();
         reader.onload = () => {
           const b64 = reader.result.split(',')[1];
-          wsRef.current.send(JSON.stringify({ type: 'audio_chunk', data: b64, format: 'webm' }));
+          wsRef.current.send(JSON.stringify({ type: 'audio_chunk', data: b64, format: recExt }));
         };
         reader.readAsDataURL(e.data);
       };
@@ -273,10 +305,11 @@ export default function ChatPage() {
   const stopVoice = () => {
     const mr = mediaRecorderRef.current;
     if (mr) {
+      const ext = mr._recExt || 'webm';
       // Wait for onstop so the final ondataavailable chunk is flushed BEFORE audio_end
       mr.onstop = () => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'audio_end', format: 'webm' }));
+          wsRef.current.send(JSON.stringify({ type: 'audio_end', format: ext }));
         }
       };
       mr.stop();
