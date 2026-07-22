@@ -143,13 +143,17 @@ export default function ChatPage() {
       const msg = JSON.parse(ev.data);
       if (msg.type === 'vad_status') {
         setVoiceSpeaking(msg.speaking);
+      } else if (msg.type === 'status') {
+        setVoiceStatus(msg.status);
+        if (msg.status.includes('Transcribing')) setVoiceProcessing(true);
       } else if (msg.type === 'transcript') {
         setVoiceTranscript(msg.text);
-        setVoiceStatus('Processing…');
+        setVoiceStatus('Processing response…');
         setVoiceProcessing(true);
         if (msg.final) addMsg('user', msg.text);
       } else if (msg.type === 'ai_token') {
         aiStreamingRef.current = true;
+        setVoiceStatus('Responding…');
         setMessages(prev => {
           const last = prev[prev.length - 1];
           if (last?.role === 'ai' && last?.streaming) {
@@ -158,6 +162,21 @@ export default function ChatPage() {
           const id = nextId.current++;
           return [...prev, { id, role: 'ai', text: msg.token, streaming: true }];
         });
+      } else if (msg.type === 'ai_audio') {
+        if (msg.data) {
+          try {
+            stopTTS();
+            const binary = atob(msg.data);
+            const array = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
+            const blob = new Blob([array.buffer], { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+            currentAudio = new Audio(url);
+            currentAudio.play().catch(() => {});
+          } catch (err) {
+            console.error("WS audio playback error:", err);
+          }
+        }
       } else if (msg.type === 'ai_done') {
         aiStreamingRef.current = false;
         setVoiceProcessing(false);

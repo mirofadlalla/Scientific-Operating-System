@@ -33,81 +33,50 @@ _latency_window: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
 # Counters
 _counters: Dict[str, int] = defaultdict(int)
 
-# Token tracking per model
-_token_usage: Dict[str, Dict[str, int]] = defaultdict(lambda: {"prompt": 0, "completion": 0, "total": 0})
+# Token and performance tracking per model
+_token_usage: Dict[str, Dict[str, float]] = defaultdict(lambda: {
+    "prompt": 0, "completion": 0, "total": 0,
+    "cost_usd": 0.0, "ttft_sum": 0.0, "ttft_count": 0,
+    "tps_sum": 0.0, "tps_count": 0
+})
 
-# Agent routing counts
-_agent_counts: Dict[str, int] = defaultdict(int)
-
-# Error log (last 50 errors)
-_error_log: deque = deque(maxlen=50)
-
-# Request log (last 200 requests — for /metrics/requests endpoint)
-_request_log: deque = deque(maxlen=200)
-
-# Active sessions tracker
-_active_sessions: Dict[str, float] = {}  # session_id → start_time
+# Model pricing per 1M tokens (Groq rates / default estimates)
+MODEL_PRICING = {
+    "llama-3.3-70b-versatile": {"prompt": 0.59, "completion": 0.79},
+    "whisper-large-v3-turbo":  {"prompt": 0.04, "completion": 0.04},
+    "canopylabs/orpheus-arabic-saudi": {"prompt": 0.50, "completion": 0.50},
+    "canopylabs/orpheus-v1-english": {"prompt": 0.50, "completion": 0.50},
+}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Public API — called from middleware and agents
-# ─────────────────────────────────────────────────────────────────────────────
-
-def record_request(
-    endpoint: str,
-    method: str,
-    status_code: int,
-    latency_ms: float,
-    session_id: Optional[str] = None,
+def record_tokens(
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    ttft_ms: Optional[float] = None,
+    tps: Optional[float] = None,
 ):
-    """Record a completed HTTP request."""
+    """Record LLM token usage, latency performance (TTFT, TPS), and calculate estimated cost."""
     with _lock:
-        _counters["requests_total"] += 1
-        _counters[f"requests_{method.upper()}"] += 1
-        _latency_window[endpoint].append(latency_ms)
-        _latency_window["__all__"].append(latency_ms)
+        rates = MODEL_PRICING.get(model, {"prompt": 0.50, "completion": 0.50})
+        cost = ((prompt_tokens / 1_000_000) * rates["prompt"]) + ((completion_tokens / 1_000_000) * rates["completion"])
 
-        if status_code >= 500:
-            _counters["errors_5xx"] += 1
-        elif status_code >= 400:
-            _counters["errors_4xx"] += 1
-        else:
-            _counters["requests_success"] += 1
-
-        _request_log.append({
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "endpoint": endpoint,
-            "method": method,
-            "status": status_code,
-            "latency_ms": round(latency_ms, 2),
-        })
-
-
-def record_agent_call(agent: str, intent: str, latency_ms: float, success: bool = True):
-    """Record an agent routing event."""
-    with _lock:
-        _agent_counts[agent] += 1
-        _agent_counts["__total__"] += 1
-        _latency_window[f"agent_{agent}"].append(latency_ms)
-        if not success:
-            _counters[f"agent_{agent}_errors"] += 1
-
-
-def record_out_of_domain(reason: str = ""):
-    """Record an out-of-domain rejection."""
-    with _lock:
-        _counters["out_of_domain_total"] += 1
-
-
-def record_tokens(model: str, prompt_tokens: int, completion_tokens: int):
-    """Record LLM token usage."""
-    with _lock:
         _token_usage[model]["prompt"]     += prompt_tokens
         _token_usage[model]["completion"] += completion_tokens
         _token_usage[model]["total"]      += prompt_tokens + completion_tokens
+        _token_usage[model]["cost_usd"]   += round(cost, 6)
+
+        if ttft_ms is not None:
+            _token_usage[model]["ttft_sum"]   += ttft_ms
+            _token_usage[model]["ttft_count"] += 1
+        if tps is not None:
+            _token_usage[model]["tps_sum"]   += tps
+            _token_usage[model]["tps_count"] += 1
+
         _token_usage["__all__"]["prompt"]     += prompt_tokens
         _token_usage["__all__"]["completion"] += completion_tokens
         _token_usage["__all__"]["total"]      += prompt_tokens + completion_tokens
+        _token_usage["__all__"]["cost_usd"]   += round(cost, 6)
 
 
 def record_error(endpoint: str, error: str, session_id: Optional[str] = None):
@@ -214,7 +183,14 @@ def get_snapshot() -> Dict:
                 "latency":      agent_latency,
             },
             "tokens": {
-                k: v for k, v in _token_usage.items()
+                k: {
+                    "prompt": int(v.get("prompt", 0)),
+                    "completion": int(v.get("completion", 0)),
+                    "total": int(v.get("total", 0)),
+                    "cost_usd": round(v.get("cost_usd", 0.0), 6),
+                    "avg_ttft_ms": round(v["ttft_sum"] / v["ttft_count"], 2) if v.get("ttft_count", 0) > 0 else 0.0,
+                    "avg_tps": round(v["tps_sum"] / v["tps_count"], 2) if v.get("tps_count", 0) > 0 else 0.0,
+                } for k, v in _token_usage.items()
             },
             "sessions": {
                 "active":  len(_active_sessions),

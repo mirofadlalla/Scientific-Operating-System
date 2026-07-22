@@ -132,11 +132,26 @@ async def websocket_voice_channel(
                     continue
 
                 audio_format = msg.get("format", "webm")
+                await websocket.send_text(json.dumps({"type": "status", "status": "Transcribing..."}))
+                
+                import time
+                stt_start = time.time()
                 try:
                     transcript = await audio_processor.transcribe_chunks(
                         session.audio_chunks, audio_format
                     )
                     session.audio_chunks = []
+                    stt_duration = time.time() - stt_start
+                    
+                    # Record STT metrics
+                    from app import monitoring
+                    monitoring.record_tokens(
+                        model=settings.GROQ_WHISPER_MODEL,
+                        prompt_tokens=100,
+                        completion_tokens=len(transcript) // 4,
+                        ttft_ms=round(stt_duration * 1000, 2),
+                    )
+
                     await websocket.send_text(json.dumps({
                         "type": "transcript", "text": transcript, "final": True,
                     }))
@@ -147,15 +162,33 @@ async def websocket_voice_channel(
                     session.audio_chunks = []
                     continue
 
+                await websocket.send_text(json.dumps({"type": "status", "status": "Processing..."}))
                 session.ai_streaming = True
                 session.interrupted = False
+                full_reply = ""
                 try:
                     async for token in route_and_stream(transcript, session_id, "ws_user"):
                         if session.interrupted:
                             break
+                        full_reply += token
                         await websocket.send_text(json.dumps({
                             "type": "ai_token", "token": token, "done": False,
                         }))
+                    
+                    # Generate TTS audio for full response if not interrupted
+                    if not session.interrupted and full_reply.strip():
+                        await websocket.send_text(json.dumps({"type": "status", "status": "Synthesizing voice..."}))
+                        try:
+                            audio_bytes = await audio_processor.synthesize_speech(full_reply, voice="auto")
+                            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+                            await websocket.send_text(json.dumps({
+                                "type": "ai_audio",
+                                "data": audio_b64,
+                                "format": "wav"
+                            }))
+                        except Exception as tts_err:
+                            logger.error(f"[WS TTS Error]: {tts_err}")
+
                 except Exception as exc:
                     await websocket.send_text(json.dumps({
                         "type": "error", "message": f"Agent error: {exc}",

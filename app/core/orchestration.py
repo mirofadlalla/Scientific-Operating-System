@@ -220,6 +220,11 @@ async def route_and_stream(
             messages.append(msg)
         messages.append({"role": "user", "content": text_input})
 
+        start_time = time.time()
+        ttft_ms = None
+        first_token_received = False
+        token_count = 0
+
         stream = await client.chat.completions.create(
             model=settings.ORCHESTRATOR_MODEL,
             messages=messages,
@@ -230,14 +235,23 @@ async def route_and_stream(
         async for chunk in stream:
             token = chunk.choices[0].delta.content or ""
             if token:
+                if not first_token_received:
+                    first_token_received = True
+                    ttft_ms = (time.time() - start_time) * 1000
+                token_count += 1
                 full_reply += token
                 yield token
+
+        gen_duration = time.time() - start_time - ((ttft_ms or 0) / 1000)
+        tps = (token_count / gen_duration) if gen_duration > 0 and token_count > 0 else 0.0
 
         monitoring.record_agent_call("APP_AGENT", "APP_HELP", 0, success=True)
         monitoring.record_tokens(
             model=settings.ORCHESTRATOR_MODEL,
             prompt_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
             completion_tokens=len(full_reply) // 4,
+            ttft_ms=ttft_ms,
+            tps=tps,
         )
         if store_memory:
             short_memory.add_message(session_id, "user", text_input)
@@ -466,6 +480,11 @@ async def route_and_stream(
         "content": f'User Input Question: "{text_input}"\nRetrieved Lab Data: "{agent_raw_output}"',
     })
 
+    start_time = time.time()
+    ttft_ms = None
+    first_token_received = False
+    token_count = 0
+
     stream = await client.chat.completions.create(
         model=settings.ORCHESTRATOR_MODEL,
         messages=messages,
@@ -478,8 +497,15 @@ async def route_and_stream(
     async for chunk in stream:
         token = chunk.choices[0].delta.content or ""
         if token:
+            if not first_token_received:
+                first_token_received = True
+                ttft_ms = (time.time() - start_time) * 1000
+            token_count += 1
             full_reply += token
             yield token
+
+    gen_duration = time.time() - start_time - ((ttft_ms or 0) / 1000)
+    tps = (token_count / gen_duration) if gen_duration > 0 and token_count > 0 else 0.0
 
     monitoring.record_agent_call(
         agent=target_agent,
@@ -491,6 +517,8 @@ async def route_and_stream(
         model=settings.ORCHESTRATOR_MODEL,
         prompt_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
         completion_tokens=len(full_reply) // 4,
+        ttft_ms=ttft_ms,
+        tps=tps,
     )
 
     if store_memory:

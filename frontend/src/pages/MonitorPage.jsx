@@ -145,28 +145,46 @@ function StatusChart({ recentRequests }) {
   );
 }
 
-// ── Token usage ───────────────────────────────────────────────────────────────
+// ── Token usage & LLM Performance ─────────────────────────────────────────────
 function TokenChart({ snapshot }) {
-  const models = Object.entries(snapshot?.token_usage || {}).map(([model, v]) => ({
-    model: model.split('-')[0],
-    prompt: v.prompt_tokens || 0,
-    completion: v.completion_tokens || 0,
-  }));
+  const tokenStats = snapshot?.tokens || {};
+  const entries = Object.entries(tokenStats).filter(([k]) => k !== '__all__');
+  const allStats = tokenStats['__all__'] || {};
+
   return (
     <div className="chart-card">
-      <div className="chart-title">Token Usage</div>
-      <div className="chart-sub">Prompt vs completion tokens by model</div>
-      <ResponsiveContainer width="100%" height={200}>
-        <BarChart data={models} margin={{ top: 4, right: 4, bottom: 4, left: -10 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(99,179,237,.07)" />
-          <XAxis dataKey="model" tick={{ fill: '#8898aa', fontSize: 11 }} />
-          <YAxis tick={{ fill: '#8898aa', fontSize: 11 }} />
-          <Tooltip content={<CustomTooltip />} />
-          <Bar dataKey="prompt" name="Prompt" stackId="a" fill="#6366f1" radius={[0,0,0,0]} />
-          <Bar dataKey="completion" name="Completion" stackId="a" fill="#3ecfcf" radius={[4,4,0,0]} />
-          <Legend wrapperStyle={{ fontSize: 11, color: '#8898aa' }} />
-        </BarChart>
-      </ResponsiveContainer>
+      <div className="chart-title">LLM Metrics & Cost</div>
+      <div className="chart-sub">Tokens, TTFT, TPS & Estimated Cost (USD)</div>
+      
+      <div style={{ margin: '12px 0', padding: '10px 14px', background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <div style={{ fontSize: 11, color: '#8898aa', textTransform: 'uppercase' }}>Total Tokens / Cost</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--mono)' }}>
+            {(allStats.total || 0).toLocaleString()} <span style={{ fontSize: 12, color: '#3ecfcf' }}>(${(allStats.cost_usd || 0).toFixed(6)})</span>
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 11, color: '#8898aa', textTransform: 'uppercase' }}>Avg TTFT / TPS</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: '#f59e0b', fontFamily: 'var(--mono)' }}>
+            {allStats.avg_ttft_ms || 0}ms | {allStats.avg_tps || 0} tps
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 150, overflowY: 'auto' }}>
+        {entries.map(([model, v]) => (
+          <div key={model} style={{ padding: '6px 10px', background: 'var(--bg)', borderRadius: 6, display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, border: '1px solid var(--border)' }}>
+            <div>
+              <div style={{ fontWeight: 600, color: '#e2e8f0', fontFamily: 'var(--mono)' }}>{model}</div>
+              <div style={{ fontSize: 10, color: '#8898aa' }}>Prompt: {v.prompt} | Comp: {v.completion}</div>
+            </div>
+            <div style={{ textAlign: 'right', fontFamily: 'var(--mono)' }}>
+              <div style={{ color: '#3ecfcf', fontWeight: 600 }}>${(v.cost_usd || 0).toFixed(6)}</div>
+              <div style={{ fontSize: 10, color: '#8898aa' }}>{v.avg_ttft_ms}ms TTFT • {v.avg_tps} TPS</div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
