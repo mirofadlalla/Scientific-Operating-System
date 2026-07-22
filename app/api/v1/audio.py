@@ -54,20 +54,15 @@ async def transcribe_audio(
 
 @router.post("/synthesize")
 async def synthesize_speech(request: AudioSynthesizeRequest):
-    """Text-to-Speech using OpenAI TTS (requires OPENAI_API_KEY)."""
-    if not settings.OPENAI_API_KEY:
-        raise HTTPException(
-            status_code=503,
-            detail="High-quality TTS requires OPENAI_API_KEY. Use browser SpeechSynthesis instead.",
-        )
+    """Text-to-Speech using Groq Orpheus TTS."""
     try:
         if not request.text or not request.text.strip():
             raise HTTPException(status_code=400, detail="Text cannot be empty")
         audio_bytes = await audio_processor.synthesize_speech(request.text, request.voice)
         return StreamingResponse(
             iter([audio_bytes]),
-            media_type="audio/mpeg",
-            headers={"Content-Disposition": "attachment; filename=speech.mp3"},
+            media_type="audio/wav",
+            headers={"Content-Disposition": "attachment; filename=speech.wav"},
         )
     except HTTPException:
         raise
@@ -81,7 +76,7 @@ async def agent_voice_interaction(
     session_id: str = Form(default="default_session"),
     user_id: str = Form(default="default_user"),
     audio_format: str = Form(default="webm"),
-    voice: str = Form(default="nova"),
+    voice: str = Form(default="auto"),
 ):
     """HTTP voice-to-voice pipeline: STT → Agent → TTS."""
     try:
@@ -99,17 +94,15 @@ async def agent_voice_interaction(
         if not full_response:
             raise HTTPException(status_code=500, detail="Failed to generate response")
 
-        if settings.OPENAI_API_KEY:
-            response_audio = await audio_processor.synthesize_speech(full_response, voice)
-            return StreamingResponse(
-                iter([response_audio]),
-                media_type="audio/mpeg",
-                headers={
-                    "Content-Disposition": "attachment; filename=agent_response.mp3",
-                    "X-Agent-Text": full_response[:200],
-                },
-            )
-        return {"status": "text_only", "agent_text": full_response}
+        response_audio = await audio_processor.synthesize_speech(full_response, voice)
+        return StreamingResponse(
+            iter([response_audio]),
+            media_type="audio/wav",
+            headers={
+                "Content-Disposition": "attachment; filename=agent_response.wav",
+                "X-Agent-Text": full_response[:200],
+            },
+        )
 
     except HTTPException:
         raise

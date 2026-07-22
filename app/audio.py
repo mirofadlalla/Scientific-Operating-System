@@ -6,7 +6,7 @@ Audio Processing Module - STT (Groq Whisper) and TTS capabilities for agents
 """
 import sys
 import io as _io
-# Force stdout/stderr to UTF-8 on Windows so Unicode in log messages never crashes
+# Force stdout/stderr to UTF-8 on Windows so Unicode in log messages never crashes خلي الـ stdout يكتب UTF-8.
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 if hasattr(sys.stderr, 'reconfigure'):
@@ -56,9 +56,10 @@ class AudioProcessor:
             raise ValueError("Empty audio buffer — nothing to transcribe")
 
         try:
-            audio_stream = io.BytesIO(audio_file)
+            audio_stream = io.BytesIO(audio_file) # Groq API عايز File => لكن إحنا عندنا Bytes => فنحوله لملف في الذاكرة.
+
             # Whisper needs a filename so it can detect the codec
-            audio_stream.name = f"recording.{audio_format}"
+            audio_stream.name = f"recording.{audio_format}" # Whisper بيعرف نوع الملف من الامتداد.
 
             transcript = await self.groq_client.audio.transcriptions.create(
                 model=settings.GROQ_WHISPER_MODEL,
@@ -85,37 +86,43 @@ class AudioProcessor:
     # TTS  —  OpenAI (high-quality) with graceful degradation
     # ──────────────────────────────────────────────────────────────────────────
 
-    async def synthesize_speech(self, text: str, voice: str = "nova") -> bytes:
+    async def synthesize_speech(self, text: str, voice: str = "auto") -> bytes:
         """
-        Text-to-Speech using OpenAI TTS-1.
-        Falls back gracefully when OPENAI_API_KEY is not configured.
+        Text-to-Speech using Groq API with Orpheus models.
+        Auto-detects language or defaults based on text content.
 
         Args:
             text: Text to synthesize
-            voice: alloy | echo | fable | nova | onyx | shimmer
+            voice: Voice parameter (defaults: 'abdullah' for Arabic, 'hannah' for English)
 
         Returns:
-            MP3 audio bytes
+            WAV/Audio bytes
         """
-        if not self.openai_client:
-            raise ValueError(
-                "High-quality TTS requires OPENAI_API_KEY. "
-                "Browser SpeechSynthesis is available as a free alternative."
-            )
+        import re
+        is_arabic = bool(re.search(r'[\u0600-\u06FF]', text))
+        model = "canopylabs/orpheus-arabic-saudi" if is_arabic else "canopylabs/orpheus-v1-english"
+        selected_voice = voice if voice != "auto" else ("abdullah" if is_arabic else "hannah")
 
         try:
-            response = await self.openai_client.audio.speech.create(
-                model="tts-1",
-                voice=voice,
+            response = await self.groq_client.audio.speech.create(
+                model=model,
+                voice=selected_voice,
+                response_format="wav",
                 input=text,
-                speed=1.0
             )
-            audio_bytes = response.content
-            print(f"[TTS OK] {len(text)} chars -> {len(audio_bytes):,} bytes audio")
+            # Response in OpenAI/Groq SDK supports response.content or streaming/bytes
+            if hasattr(response, "content"):
+                audio_bytes = response.content
+            elif hasattr(response, "read"):
+                audio_bytes = await response.read()
+            else:
+                audio_bytes = response
+
+            print(f"[TTS OK] {model} ({selected_voice}) -> {len(audio_bytes):,} bytes audio")
             return audio_bytes
 
         except Exception as exc:
-            print(f"[TTS FAIL] OpenAI TTS error: {repr(exc)}")
+            print(f"[TTS FAIL] Groq TTS error: {repr(exc)}")
             raise ValueError(f"Speech synthesis failed: {exc}") from exc
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -133,14 +140,30 @@ class AudioProcessor:
         num_samples = len(pcm_bytes) // sample_width
         fmt = f"<{num_samples}h"  # little-endian 16-bit signed
         try:
-            samples = struct.unpack(fmt, pcm_bytes[:num_samples * sample_width])
-            rms = math.sqrt(sum(s * s for s in samples) / num_samples)
+            samples = struct.unpack(fmt, pcm_bytes[:num_samples * sample_width]) 
+            # pcm is [-200 300 1000 ...] but it comes with bytes so we use struct.unpack to convert it to integers
+            rms = math.sqrt(sum(s * s for s in samples) / num_samples) # الـ RMS يمثل متوسط طاقة الإشارة الصوتية. كلما ارتفع، كان الصوت أعلى.
             return rms
         except struct.error:
             return 0.0
+        '''
+         ليه بنحسب RMS؟
+        الصوت عبارة عن موجة.
+        لو الميكروفون ساكت:
+
+        1 / -2 / 3 / -1 / 0
+
+        الـ RMS هيبقى صغير جداً.
+
+        لكن لو حد بيتكلم:
+        300 / 800 / 1500 / 700 / 900
+        الـ RMS هيكبر.
+
+        فهو مقياس لشدة الصوت بغض النظر عن الإشارة الموجبة أو السالبة.
+        '''
 
     @staticmethod
-    def is_speech(rms: float, threshold: float = 500.0) -> bool:
+    def is_speech(rms: float, threshold: float = 1200.0) -> bool:
         """Simple energy threshold VAD."""
         return rms > threshold
 

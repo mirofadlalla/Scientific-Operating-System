@@ -202,7 +202,7 @@ async def route_and_stream(
 
     # ── Fast path: greetings skip ALL routing ────────────────────────────────
     if should_skip_orchestrator(text_input):
-        chat_history = short_memory.get_history(session_id, limit=12)
+        chat_history = short_memory.get_history(session_id, limit=5)
         messages = [
             {"role": "system", "content": (
                 "You are AI-lixir, a friendly and knowledgeable AI Scientific Operating System "
