@@ -350,7 +350,27 @@ export default function ChatPage() {
                 {msg.role === 'ai' ? 'OS' : msg.role === 'user' ? 'U' : '⊙'}
               </div>
               <div className={`bubble ${msg.role === 'ai' ? 'ai' : msg.role === 'user' ? 'user' : 'sys'} ${msg.variant || ''} ${msg.streaming ? 'streaming' : ''}`}>
-                {msg.text}
+                {(() => {
+                  const imgMatch = msg.text.match(/!\[(.*?)\]\((https:\/\/pubchem\.ncbi\.nlm\.nih\.gov\/rest\/pug\/compound\/.*?\/PNG.*?)\)/);
+                  if (imgMatch) {
+                    const altText = imgMatch[1];
+                    const imgUrl = imgMatch[2];
+                    const cleanText = msg.text.replace(imgMatch[0], '').trim();
+                    return (
+                      <>
+                        <div className="compound-structure-card">
+                          <div className="card-badge">🧪 Molecular Structure</div>
+                          <div className="img-wrap">
+                            <img src={imgUrl} alt={altText} onError={(e) => { e.target.style.display = 'none'; }} />
+                          </div>
+                          <div className="card-label">{altText}</div>
+                        </div>
+                        {cleanText && <div>{cleanText}</div>}
+                      </>
+                    );
+                  }
+                  return msg.text;
+                })()}
               </div>
             </div>
           );

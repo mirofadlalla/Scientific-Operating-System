@@ -33,6 +33,18 @@ _latency_window: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
 # Counters
 _counters: Dict[str, int] = defaultdict(int)
 
+# Agent routing counts
+_agent_counts: Dict[str, int] = defaultdict(int)
+
+# Error log (last 50 errors)
+_error_log: deque = deque(maxlen=50)
+
+# Request log (last 200 requests — for /metrics/requests endpoint)
+_request_log: deque = deque(maxlen=200)
+
+# Active sessions tracker
+_active_sessions: Dict[str, float] = {}  # session_id → start_time
+
 # Token and performance tracking per model
 _token_usage: Dict[str, Dict[str, float]] = defaultdict(lambda: {
     "prompt": 0, "completion": 0, "total": 0,
@@ -47,6 +59,56 @@ MODEL_PRICING = {
     "canopylabs/orpheus-arabic-saudi": {"prompt": 0.50, "completion": 0.50},
     "canopylabs/orpheus-v1-english": {"prompt": 0.50, "completion": 0.50},
 }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API — called from middleware and agents
+# ─────────────────────────────────────────────────────────────────────────────
+
+def record_request(
+    endpoint: str,
+    method: str,
+    status_code: int,
+    latency_ms: float,
+    session_id: Optional[str] = None,
+):
+    """Record a completed HTTP request."""
+    with _lock:
+        _counters["requests_total"] += 1
+        _counters[f"requests_{method.upper()}"] += 1
+        _latency_window[endpoint].append(latency_ms)
+        _latency_window["__all__"].append(latency_ms)
+
+        if status_code >= 500:
+            _counters["errors_5xx"] += 1
+        elif status_code >= 400:
+            _counters["errors_4xx"] += 1
+        else:
+            _counters["requests_success"] += 1
+
+        _request_log.append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "endpoint": endpoint,
+            "method": method,
+            "status": status_code,
+            "latency_ms": round(latency_ms, 2),
+        })
+
+
+def record_agent_call(agent: str, intent: str, latency_ms: float, success: bool = True):
+    """Record an agent routing event."""
+    with _lock:
+        _agent_counts[agent] += 1
+        _agent_counts["__total__"] += 1
+        _latency_window[f"agent_{agent}"].append(latency_ms)
+        if not success:
+            _counters[f"agent_{agent}_errors"] += 1
+
+
+def record_out_of_domain(reason: str = ""):
+    """Record an out-of-domain rejection."""
+    with _lock:
+        _counters["out_of_domain_total"] += 1
 
 
 def record_tokens(

@@ -384,6 +384,16 @@ async def route_and_stream(
     tasks, task_mapping = [], []
     chemical_intents = {"CHEMICAL_SIMILARITY", "ADMET_ANALYSIS", "DRUG_REPURPOSING"}
     has_chemical_data = entities.get("smiles") or entities.get("compound")
+    
+    # Non-blocking structure visualization image injection
+    chem_identifier = entities.get("smiles") or entities.get("compound")
+    if chem_identifier:
+        import urllib.parse
+        encoded_chem = urllib.parse.quote(chem_identifier.strip())
+        img_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/{encoded_chem}/PNG?image_size=300x300"
+        # Yield non-blocking markdown image string directly to stream
+        yield f"\n\n![Molecular Structure of {chem_identifier}]({img_url})\n\n"
+
     if (intent in chemical_intents or target_agent == "CHEMICAL_AGENT") and has_chemical_data:
         tasks.append(chemical_agent.run(intent, entities))
         task_mapping.append("CHEMICAL")
