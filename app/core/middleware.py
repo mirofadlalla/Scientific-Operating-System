@@ -22,6 +22,8 @@ class ReadinessMiddleware(BaseHTTPMiddleware):
     """
     Returns 503 for all API routes until the RAG engine finishes loading.
     Health / docs / status paths always pass through immediately.
+    WebSocket connections are always forwarded (BaseHTTPMiddleware cannot
+    handle WS upgrade responses — they must be passed to the actual handler).
     """
     _ALWAYS_ALLOW = {
         "/",
@@ -33,10 +35,18 @@ class ReadinessMiddleware(BaseHTTPMiddleware):
         "/api/v1/rag/status",
         "/api/v1/metrics",
         "/api/v1/metrics/requests",
+        # Voice WebSocket must ALWAYS pass through
+        "/api/v1/ws/voice",
     }
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
+
+        # WebSocket upgrade requests must always be forwarded — BaseHTTPMiddleware
+        # cannot return a proper WS handshake response, so attempting to block
+        # them would crash the connection silently.
+        if request.scope.get("type") == "websocket":
+            return await call_next(request)
 
         if path in self._ALWAYS_ALLOW or path.startswith("/api/v1/rag/ingest/status"):
             return await call_next(request)

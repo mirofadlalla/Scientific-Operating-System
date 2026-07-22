@@ -7,13 +7,17 @@ WS   /api/v1/ws/voice     — Real-time bi-directional voice channel
 import base64
 import json
 import logging
+import time
 import traceback
 from typing import List
+
+from app import monitoring
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.audio import audio_processor
+from app.config import settings
 from app.core.orchestration import route_and_stream
 from app.schemas.chat import UserQuery
 
@@ -134,7 +138,6 @@ async def websocket_voice_channel(
                 audio_format = msg.get("format", "webm")
                 await websocket.send_text(json.dumps({"type": "status", "status": "Transcribing..."}))
                 
-                import time
                 stt_start = time.time()
                 try:
                     transcript = await audio_processor.transcribe_chunks(
@@ -142,19 +145,22 @@ async def websocket_voice_channel(
                     )
                     session.audio_chunks = []
                     stt_duration = time.time() - stt_start
-                    
-                    # Record STT metrics
-                    from app import monitoring
-                    monitoring.record_tokens(
-                        model=settings.GROQ_WHISPER_MODEL,
-                        prompt_tokens=100,
-                        completion_tokens=len(transcript) // 4,
-                        ttft_ms=round(stt_duration * 1000, 2),
-                    )
 
+                    # Send transcript FIRST — then record metrics
                     await websocket.send_text(json.dumps({
                         "type": "transcript", "text": transcript, "final": True,
                     }))
+
+                    # Record STT metrics (non-blocking, after transcript is sent)
+                    try:
+                        monitoring.record_tokens(
+                            model=settings.GROQ_WHISPER_MODEL,
+                            prompt_tokens=100,
+                            completion_tokens=len(transcript) // 4,
+                            ttft_ms=round(stt_duration * 1000, 2),
+                        )
+                    except Exception:
+                        pass  # Never let metrics crash the pipeline
                 except Exception as exc:
                     await websocket.send_text(json.dumps({
                         "type": "error", "message": f"Transcription failed: {exc}",

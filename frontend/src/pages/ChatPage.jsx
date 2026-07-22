@@ -14,8 +14,8 @@ const THOUGHTS = [
 
 let currentAudio = null;
 
-async function playGroqAudio(text, autoPlayEnabled) {
-  if (!autoPlayEnabled || !text || !text.trim()) return;
+async function playGroqAudio(text, soundEnabledRef) {
+  if (!soundEnabledRef.current || !text || !text.trim()) return;
   stopTTS();
   try {
     const res = await fetch(`${API_BASE}/audio/synthesize`, {
@@ -27,11 +27,17 @@ async function playGroqAudio(text, autoPlayEnabled) {
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       currentAudio = new Audio(url);
-      await currentAudio.play();
+      currentAudio.play().catch((e) => {
+        console.warn('HTTP TTS autoplay blocked, falling back to SpeechSynthesis:', e);
+        if (window.speechSynthesis) {
+          const utt = new SpeechSynthesisUtterance(text.slice(0, 800));
+          window.speechSynthesis.speak(utt);
+        }
+      });
       return;
     }
   } catch (err) {
-    console.warn("Backend TTS request error, falling back to Web Speech API:", err);
+    console.warn('Backend TTS request error, falling back to Web Speech API:', err);
   }
   // Fallback to browser SpeechSynthesis if backend TTS call fails
   if (window.speechSynthesis) {
@@ -102,7 +108,14 @@ export default function ChatPage() {
   const [inputText, setInputText]     = useState('');
   const [sending, setSending]         = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const soundEnabledRef = useRef(true);
   const [ttsActive, setTtsActive]     = useState(false);
+
+  // Keep ref in sync with state so closures always read the latest value
+  const setSoundEnabledSync = (val) => {
+    soundEnabledRef.current = val;
+    setSoundEnabled(val);
+  };
 
   // WebSocket state
   const [wsConnected, setWsConnected] = useState(false);
@@ -172,7 +185,8 @@ export default function ChatPage() {
           return [...prev, { id, role: 'ai', text: msg.token, streaming: true }];
         });
       } else if (msg.type === 'ai_audio') {
-        if (msg.data) {
+        // Only play if sound is enabled — check ref (not state) to avoid stale closure
+        if (msg.data && soundEnabledRef.current) {
           try {
             stopTTS();
             const binary = atob(msg.data);
@@ -181,9 +195,12 @@ export default function ChatPage() {
             const blob = new Blob([array.buffer], { type: 'audio/wav' });
             const url = URL.createObjectURL(blob);
             currentAudio = new Audio(url);
-            currentAudio.play().catch(() => {});
+            currentAudio.play().catch((playErr) => {
+              console.warn('WS ai_audio autoplay blocked, trying SpeechSynthesis fallback:', playErr);
+              // We don’t have the original text here so skip synthesis fallback
+            });
           } catch (err) {
-            console.error("WS audio playback error:", err);
+            console.error('WS audio playback error:', err);
           }
         }
       } else if (msg.type === 'ai_done') {
@@ -254,15 +271,24 @@ export default function ChatPage() {
   };
 
   const stopVoice = () => {
-    if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream?.getTracks().forEach(t => t.stop());
+    const mr = mediaRecorderRef.current;
+    if (mr) {
+      // Wait for onstop so the final ondataavailable chunk is flushed BEFORE audio_end
+      mr.onstop = () => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'audio_end', format: 'webm' }));
+        }
+      };
+      mr.stop();
+      mr.stream?.getTracks().forEach(t => t.stop());
+    } else {
+      // No recorder running — send audio_end immediately if needed
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'audio_end', format: 'webm' }));
+      }
     }
     if (audioContextRef.current) audioContextRef.current.close();
     cancelAnimationFrame(waveRafRef.current);
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'audio_end', format: 'webm' }));
-    }
     setVoiceActive(false);
     setVoiceSpeaking(false);
     setWaveHeights(Array(12).fill(4));
@@ -317,7 +343,7 @@ export default function ChatPage() {
         updateMsg(aiId, full);
       }
       setMessages(prev => prev.map(m => m.id === aiId ? { ...m, streaming: false } : m));
-      if (full) playGroqAudio(full, soundEnabled);
+      if (full) playGroqAudio(full, soundEnabledRef);
     } catch (err) {
       clearInterval(iv);
       setMessages(prev => prev.filter(m => m.id !== thinkId));
@@ -424,7 +450,7 @@ export default function ChatPage() {
             title={soundEnabled ? "Audio response: ON" : "Audio response: OFF"}
             onClick={() => {
               if (soundEnabled) stopTTS();
-              setSoundEnabled(!soundEnabled);
+              setSoundEnabledSync(!soundEnabled);
             }}
           >
             {soundEnabled ? '🔊' : '🔇'}
