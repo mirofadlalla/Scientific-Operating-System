@@ -23,13 +23,22 @@ async function playGroqAudio(text, autoPlayEnabled) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text.slice(0, 1000), voice: 'auto' }),
     });
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    currentAudio = new Audio(url);
-    currentAudio.play().catch(() => {});
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      currentAudio = new Audio(url);
+      await currentAudio.play();
+      return;
+    }
   } catch (err) {
-    console.error("Audio playback error:", err);
+    console.warn("Backend TTS request error, falling back to Web Speech API:", err);
+  }
+  // Fallback to browser SpeechSynthesis if backend TTS call fails
+  if (window.speechSynthesis) {
+    const utt = new SpeechSynthesisUtterance(text.slice(0, 800));
+    utt.rate = 1.0;
+    utt.pitch = 1.0;
+    window.speechSynthesis.speak(utt);
   }
 }
 
@@ -344,12 +353,16 @@ export default function ChatPage() {
               </div>
             );
           }
+          const isAI = msg.role === 'ai';
+          const isUser = msg.role === 'user';
+          const roleClass = isAI ? 'ai' : isUser ? 'user' : 'sys';
+
           return (
-            <div key={msg.id} className={`message-row ${msg.role === 'ai' ? 'ai' : msg.role === 'user' ? 'user' : 'sys'}`}>
-              <div className={`avatar ${msg.role === 'ai' ? 'ai' : msg.role === 'user' ? 'user' : 'sys'}`}>
-                {msg.role === 'ai' ? 'OS' : msg.role === 'user' ? 'U' : '⊙'}
+            <div key={msg.id} className={`message-row ${roleClass}`}>
+              <div className={`avatar ${roleClass}`}>
+                {isAI ? 'OS' : isUser ? 'U' : '⊙'}
               </div>
-              <div className={`bubble ${msg.role === 'ai' ? 'ai' : msg.role === 'user' ? 'user' : 'sys'} ${msg.variant || ''} ${msg.streaming ? 'streaming' : ''}`}>
+              <div className={`bubble ${roleClass} ${msg.variant || ''} ${msg.streaming ? 'streaming' : ''}`}>
                 {(() => {
                   const imgMatch = msg.text.match(/!\[(.*?)\]\((https:\/\/pubchem\.ncbi\.nlm\.nih\.gov\/rest\/pug\/compound\/.*?\/PNG.*?)\)/);
                   if (imgMatch) {
@@ -371,6 +384,23 @@ export default function ChatPage() {
                   }
                   return msg.text;
                 })()}
+
+                {/* Copy button */}
+                {msg.text && msg.role !== 'sys' && (
+                  <button
+                    className="copy-btn"
+                    title="Copy message"
+                    onClick={(e) => {
+                      const btn = e.currentTarget;
+                      const cleanText = msg.text.replace(/!\[.*?\]\(.*?\)/g, '').trim();
+                      navigator.clipboard.writeText(cleanText);
+                      btn.innerText = '✓ Copied';
+                      setTimeout(() => { btn.innerText = '📋 Copy'; }, 2000);
+                    }}
+                  >
+                    📋 Copy
+                  </button>
+                )}
               </div>
             </div>
           );

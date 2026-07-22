@@ -214,7 +214,9 @@ body::before {
 .avatar.sys  { background: rgba(255,255,255,.04); border: 1px solid var(--border); color: var(--text-sec); font-size: 16px; }
 
 .bubble {
+  position: relative;
   padding: 13px 17px;
+  padding-bottom: 28px;
   border-radius: var(--radius);
   font-size: 14px;
   line-height: 1.75;
@@ -223,6 +225,27 @@ body::before {
   word-break: break-word;
 }
 .bubble.ai   { background: rgba(17,25,39,.9); border: 1px solid var(--border); }
+.copy-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-sec);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-family: var(--mono);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: all 0.2s ease;
+}
+.copy-btn:hover {
+  opacity: 1;
+  background: rgba(99, 102, 241, 0.2);
+  border-color: var(--accent);
+  color: #fff;
+}
 .compound-structure-card {
   margin-bottom: 12px;
   background: rgba(13, 20, 32, 0.7);
