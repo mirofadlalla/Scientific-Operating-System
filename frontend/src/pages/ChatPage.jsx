@@ -162,9 +162,10 @@ export default function ChatPage() {
   const isSpeakingRef      = useRef(false);
   const autoFinalizingRef  = useRef(false);
 
-  // Binary audio accumulation for TTS playback
-  const audioBlobPartsRef  = useRef([]);
-  const receivingAudioRef  = useRef(false);
+  // Progressive audio queue for streaming TTS playback
+  const audioQueueRef   = useRef([]);   // Queue of Blob objects (each a complete WAV)
+  const isPlayingRef    = useRef(false); // Whether we're currently playing a chunk
+  const aiDoneRef       = useRef(false); // Whether ai_done has been received for current turn
 
   const chatEndRef = useRef(null);
   const nextId     = useRef(1);
@@ -188,6 +189,43 @@ export default function ChatPage() {
     voiceActiveRef.current = val;
     setVoiceActive(val);
   };
+
+  // ── Progressive Audio Queue Playback ─────────────────────────────────────
+  // Plays WAV chunks sequentially as they arrive from the server.
+  // When the last chunk finishes and ai_done was received, resumes mic.
+  const startVoiceListeningRef = useRef(null);
+  const playNextInQueue = useCallback(() => {
+    if (audioQueueRef.current.length === 0) {
+      isPlayingRef.current = false;
+      // If AI is done generating, resume listening
+      if (aiDoneRef.current) {
+        aiDoneRef.current = false;
+        setVoiceStatus('Ready');
+        if (voiceActiveRef.current && startVoiceListeningRef.current) {
+          startVoiceListeningRef.current();
+        }
+      }
+      return;
+    }
+    isPlayingRef.current = true;
+    setVoiceStatus('Speaking…');
+    const blob = audioQueueRef.current.shift();
+    const url = URL.createObjectURL(blob);
+    stopTTS();
+    currentAudio = new Audio(url);
+    currentAudio.onended = () => {
+      URL.revokeObjectURL(url);
+      playNextInQueue();
+    };
+    currentAudio.onerror = () => {
+      URL.revokeObjectURL(url);
+      playNextInQueue();
+    };
+    currentAudio.play().catch(() => {
+      URL.revokeObjectURL(url);
+      playNextInQueue();
+    });
+  }, []);
 
   // ── VAD Finalize Turn (Auto-stop when user finishes speaking) ────────────
   const finalizeVoiceTurn = useCallback(() => {
@@ -249,6 +287,17 @@ export default function ChatPage() {
           isSpeakingRef.current = true;
           setVoiceSpeaking(true);
           setVoiceStatus('Listening (speaking)…');
+          // ── BARGE-IN: Stop TTS when user starts speaking ──
+          if (isPlayingRef.current || audioQueueRef.current.length > 0) {
+            console.log('[VAD] Barge-in: user speaking, stopping TTS');
+            stopTTS();
+            audioQueueRef.current = [];
+            isPlayingRef.current = false;
+            // Send interrupt to server so it stops generating TTS
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
+            }
+          }
         }
       }
       silenceStartRef.current = null;
@@ -289,6 +338,7 @@ export default function ChatPage() {
     silenceStartRef.current   = null;
     isSpeakingRef.current     = false;
     autoFinalizingRef.current = false;
+    aiDoneRef.current         = false;
 
     try {
       let stream = micStreamRef.current;
@@ -335,8 +385,6 @@ export default function ChatPage() {
       setVoiceActiveSync(true);
       setVoiceProcessing(false);
       setVoiceStatus('Listening… (speak now)');
-      audioBlobPartsRef.current = [];
-      receivingAudioRef.current = false;
 
       cancelAnimationFrame(waveRafRef.current);
       waveRafRef.current = requestAnimationFrame(animateWave);
@@ -345,6 +393,9 @@ export default function ChatPage() {
       addMsg('ai', `⚠️ Microphone error: ${err.message}`, 'error');
     }
   }, [animateWave]);
+
+  // Keep ref in sync so playNextInQueue can call it without circular deps
+  startVoiceListeningRef.current = startVoiceListening;
 
   // ── WebSocket setup ─────────────────────────────────────────────────────
   const connectWS = useCallback(() => {
@@ -373,10 +424,15 @@ export default function ChatPage() {
 
     ws.onmessage = (ev) => {
       // ── Binary frame: TTS audio chunk ──────────────────────────────────
+      // Each binary frame is a complete WAV for one TTS batch — queue it
       if (ev.data instanceof ArrayBuffer) {
         if (soundEnabledRef.current) {
-          audioBlobPartsRef.current.push(new Uint8Array(ev.data));
-          receivingAudioRef.current = true;
+          const blob = new Blob([ev.data], { type: 'audio/wav' });
+          audioQueueRef.current.push(blob);
+          // If nothing is currently playing, start playing
+          if (!isPlayingRef.current) {
+            playNextInQueue();
+          }
         }
         return;
       }
@@ -396,8 +452,10 @@ export default function ChatPage() {
         setVoiceProcessing(true);
         if (msg.final) addMsg('user', msg.text);
       } else if (msg.type === 'ai_start') {
-        audioBlobPartsRef.current = [];
-        receivingAudioRef.current = false;
+        // Clear any old queued audio
+        stopTTS();
+        audioQueueRef.current = [];
+        isPlayingRef.current = false;
         aiStreamingRef.current = true;
         setVoiceStatus('Responding…');
       } else if (msg.type === 'ai_token') {
@@ -413,50 +471,21 @@ export default function ChatPage() {
       } else if (msg.type === 'ai_done') {
         aiStreamingRef.current = false;
         setVoiceProcessing(false);
-        setVoiceStatus('Speaking…');
         setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m));
-
-        // Play accumulated binary TTS audio
-        if (receivingAudioRef.current && audioBlobPartsRef.current.length > 0 && soundEnabledRef.current) {
-          try {
-            stopTTS();
-            const blob = new Blob(audioBlobPartsRef.current, { type: 'audio/wav' });
-            const url = URL.createObjectURL(blob);
-            currentAudio = new Audio(url);
-            currentAudio.onended = () => {
-              URL.revokeObjectURL(url);
-              setVoiceStatus('Ready');
-              // Automatically resume listening for continuous hands-free multi-turn conversation!
-              if (voiceActiveRef.current) {
-                startVoiceListening();
-              }
-            };
-            currentAudio.play().catch((playErr) => {
-              console.warn('WS TTS autoplay blocked:', playErr);
-              setVoiceStatus('Ready');
-              if (voiceActiveRef.current) {
-                startVoiceListening();
-              }
-            });
-          } catch (err) {
-            console.error('WS audio playback error:', err);
-            setVoiceStatus('Ready');
-            if (voiceActiveRef.current) {
-              startVoiceListening();
-            }
-          }
+        // Audio is already playing progressively — just update status
+        if (isPlayingRef.current || audioQueueRef.current.length > 0) {
+          setVoiceStatus('Speaking…');
         } else {
           setVoiceStatus('Ready');
-          if (voiceActiveRef.current) {
-            startVoiceListening();
+          if (voiceActiveRef.current && startVoiceListeningRef.current) {
+            startVoiceListeningRef.current();
           }
         }
-        audioBlobPartsRef.current = [];
-        receivingAudioRef.current = false;
+        aiDoneRef.current = true;
       } else if (msg.type === 'interrupted') {
         stopTTS();
-        audioBlobPartsRef.current = [];
-        receivingAudioRef.current = false;
+        audioQueueRef.current = [];
+        isPlayingRef.current = false;
         setVoiceProcessing(false);
         setVoiceStatus('Interrupted');
       } else if (msg.type === 'error') {
@@ -466,7 +495,7 @@ export default function ChatPage() {
         console.error('[WS Error]', msg.message);
       }
     };
-  }, [startVoiceListening]);
+  }, []);
 
   useEffect(() => {
     connectWS();
@@ -515,6 +544,9 @@ export default function ChatPage() {
     setVoiceStatus('');
     setWaveHeights(Array(12).fill(4));
     stopTTS();
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+    aiDoneRef.current = false;
   };
 
   // ── Text submit ───────────────────────────────────────────────────────────

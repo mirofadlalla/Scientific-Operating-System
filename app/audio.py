@@ -64,6 +64,46 @@ def split_sentences(text: str) -> list[str]:
     return merged
 
 
+def batch_sentences_for_tts(sentences: list[str], min_chars: int = 120) -> list[str]:
+    """
+    Batch sentences into groups so each group has at least `min_chars` characters.
+    This reduces the number of TTS API calls dramatically.
+    E.g. 15 short sentences → 3-4 batches of ~120+ chars each.
+    """
+    if not sentences:
+        return []
+    batches = []
+    current = ""
+    for s in sentences:
+        if current:
+            current = current + " " + s
+        else:
+            current = s
+        if len(current) >= min_chars:
+            batches.append(current)
+            current = ""
+    if current:
+        batches.append(current)
+    return batches
+
+
+# Brand names / proper nouns to transliterate for Arabic TTS
+_ARABIC_TRANSLITERATIONS = {
+    "AI-Lixir": "اي ليكسر",
+    "Ai-Lixir": "اي ليكسر",
+    "ai-lixir": "اي ليكسر",
+    "ADMET": "ايه دي ام اي تي",
+    "SMILES": "سمايلز",
+}
+
+
+def _transliterate_for_arabic_tts(text: str) -> str:
+    """Replace English brand names with Arabic phonetic equivalents for TTS."""
+    for eng, ar in _ARABIC_TRANSLITERATIONS.items():
+        text = text.replace(eng, ar)
+    return text
+
+
 class AudioProcessor:
     """Handles Speech-to-Text (Groq Whisper) and Text-to-Speech for scientific agents"""
 
@@ -252,38 +292,42 @@ class AudioProcessor:
         self, text: str, voice: str = "auto"
     ) -> AsyncIterator[bytes]:
         """
-        Sentence-chunked TTS: splits text into sentences and yields WAV audio
-        for each sentence individually.  This lets the WebSocket handler send
-        audio to the browser as soon as the first sentence is synthesized,
-        dramatically reducing time-to-first-audio.
+        Batched sentence-chunked TTS: splits text into sentences, batches them
+        into groups of ~120+ chars, and yields WAV audio per batch.
+        This reduces TTS API calls (e.g. 15 sentences → 3-4 batches) while
+        still streaming audio progressively.
+
+        For Arabic voices, applies brand-name transliteration (AI-Lixir → اي ليكسر).
 
         Yields:
-            bytes — WAV audio for each sentence chunk
+            bytes — WAV audio for each batch
         """
         sentences = split_sentences(text)
         if not sentences:
             return
 
+        # Batch sentences into groups to reduce TTS API calls
+        batches = batch_sentences_for_tts(sentences, min_chars=120)
+
         voice_log("tts_chunked_start", sentence_count=len(sentences),
-                   text_preview=text[:80])
+                   batch_count=len(batches), text_preview=text[:80])
 
-        # If only one sentence or very short text, just do a single TTS call
-        if len(sentences) == 1:
-            audio = await self.synthesize_speech(sentences[0], voice)
-            yield audio
-            return
+        # Determine if Arabic voice will be used (same logic as synthesize_speech)
+        is_arabic_voice = bool(re.search(r'[\u0600-\u06FF]', text))
 
-        for idx, sentence in enumerate(sentences):
-            if not sentence.strip():
+        for idx, batch_text in enumerate(batches):
+            if not batch_text.strip():
                 continue
+            # Transliterate brand names for Arabic TTS
+            tts_text = _transliterate_for_arabic_tts(batch_text) if is_arabic_voice else batch_text
             try:
-                audio = await self.synthesize_speech(sentence, voice)
+                audio = await self.synthesize_speech(tts_text, voice)
                 voice_log("tts_chunk_ready", chunk_index=idx,
-                           sentence_len=len(sentence), audio_bytes=len(audio))
+                           text_len=len(tts_text), audio_bytes=len(audio))
                 yield audio
             except Exception as exc:
-                logger.warning(f"[TTS chunk {idx}] Failed for sentence: {exc}")
-                # Continue with remaining sentences — don't break the stream
+                logger.warning(f"[TTS batch {idx}] Failed: {exc}")
+                # Continue with remaining batches — don't break the stream
                 continue
 
     # ──────────────────────────────────────────────────────────────────────────

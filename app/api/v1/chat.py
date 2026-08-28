@@ -254,11 +254,12 @@ async def _process_voice_turn(session: VoiceSession, audio_format: str):
     voice_log("llm_done", turn_id=turn_id, latency_ms=llm_ms, ttft_ms=ttft_ms,
               reply_len=len(full_reply))
 
-    # ── TTS (sentence-chunked) ───────────────────────────────────────────
+    # ── TTS (batched sentence-chunked, progressive streaming) ───────────
     if not session.interrupted and full_reply.strip():
         await _safe_send_json(ws, {"type": "status", "status": "Synthesizing voice..."}, session)
         tts_start = time.time()
         audio_bytes_total = 0
+        chunk_idx = 0
 
         try:
             async for audio_chunk in audio_processor.synthesize_speech_chunked(
@@ -268,9 +269,12 @@ async def _process_voice_turn(session: VoiceSession, audio_format: str):
                     voice_log("tts_interrupted", turn_id=turn_id)
                     break
                 audio_bytes_total += len(audio_chunk)
-                ok = await _send_audio_binary(ws, audio_chunk, session)
+                # Send each TTS batch as a single binary frame so the client
+                # can start playing it immediately (progressive playback)
+                ok = await _safe_send_bytes(ws, audio_chunk, session)
                 if not ok:
                     break
+                chunk_idx += 1
         except asyncio.CancelledError:
             voice_log("turn_cancelled_during_tts", turn_id=turn_id)
             raise
@@ -279,7 +283,7 @@ async def _process_voice_turn(session: VoiceSession, audio_format: str):
 
         tts_ms = round((time.time() - tts_start) * 1000, 1)
         voice_log("tts_send_done", turn_id=turn_id, latency_ms=tts_ms,
-                  audio_bytes=audio_bytes_total)
+                  audio_bytes=audio_bytes_total, chunks_sent=chunk_idx)
 
     # ── Finalize ─────────────────────────────────────────────────────────
     session.ai_streaming = False
