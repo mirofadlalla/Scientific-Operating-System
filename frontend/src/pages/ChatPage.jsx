@@ -33,6 +33,27 @@ function pickRecorderFormat() {
   return { mime: '', ext: 'webm' };
 }
 
+// Compute both total RMS and speech-band (350Hz-3600Hz) RMS from frequency data.
+// Speech-band RMS rejects low frequency rumble (fans/AC) and high frequency hiss.
+function computeAudioMetrics(freqData) {
+  let totalSum = 0;
+  let speechSum = 0;
+  // Bins 2..20 (~350Hz - ~3600Hz) correspond to human vocal range
+  const speechStart = 2;
+  const speechEnd = Math.min(20, freqData.length);
+  for (let i = 0; i < freqData.length; i++) {
+    const val = freqData[i];
+    totalSum += val * val;
+    if (i >= speechStart && i < speechEnd) {
+      speechSum += val * val;
+    }
+  }
+  const totalRms = Math.sqrt(totalSum / freqData.length);
+  const speechCount = speechEnd - speechStart;
+  const speechRms = speechCount > 0 ? Math.sqrt(speechSum / speechCount) : totalRms;
+  return { totalRms, speechRms };
+}
+
 async function playGroqAudio(text, soundEnabledRef) {
   if (!soundEnabledRef.current || !text || !text.trim()) return;
   stopTTS();
@@ -155,17 +176,18 @@ export default function ChatPage() {
   const micStreamRef       = useRef(null);
   const aiStreamingRef     = useRef(false);
 
-  // VAD Auto-endpointing refs
+  // VAD Auto-endpointing & Barge-in refs
   const speechDetectedRef  = useRef(false);
   const speechStartRef     = useRef(null);
   const silenceStartRef    = useRef(null);
+  const bargeInStartRef    = useRef(null);
   const isSpeakingRef      = useRef(false);
-  const autoFinalizingRef  = useRef(false);
+  const recordingActiveRef = useRef(false);
 
   // Progressive audio queue for streaming TTS playback
-  const audioQueueRef   = useRef([]);   // Queue of Blob objects (each a complete WAV)
-  const isPlayingRef    = useRef(false); // Whether we're currently playing a chunk
-  const aiDoneRef       = useRef(false); // Whether ai_done has been received for current turn
+  const audioQueueRef      = useRef([]);   // Queue of Blob objects (each a complete WAV)
+  const isPlayingRef       = useRef(false); // Whether we're currently playing a chunk
+  const aiDoneRef          = useRef(false); // Whether ai_done has been received for current turn
 
   const chatEndRef = useRef(null);
   const nextId     = useRef(1);
@@ -182,7 +204,9 @@ export default function ChatPage() {
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   // Turn sequence counter to prevent cross-turn chunk contamination
-  const turnSeqRef         = useRef(0);
+  const turnSeqRef               = useRef(0);
+  const startVoiceListeningRef   = useRef(null);
+  const finalizeVoiceTurnRef     = useRef(null);
 
   // Keep voiceActiveRef in sync
   const setVoiceActiveSync = (val) => {
@@ -193,7 +217,6 @@ export default function ChatPage() {
   // ── Progressive Audio Queue Playback ─────────────────────────────────────
   // Plays WAV chunks sequentially as they arrive from the server.
   // When the last chunk finishes and ai_done was received, resumes mic.
-  const startVoiceListeningRef = useRef(null);
   const playNextInQueue = useCallback(() => {
     if (audioQueueRef.current.length === 0) {
       isPlayingRef.current = false;
@@ -229,9 +252,8 @@ export default function ChatPage() {
 
   // ── VAD Finalize Turn (Auto-stop when user finishes speaking) ────────────
   const finalizeVoiceTurn = useCallback(() => {
-    if (autoFinalizingRef.current) return;
-    autoFinalizingRef.current = true;
-    cancelAnimationFrame(waveRafRef.current);
+    if (!recordingActiveRef.current) return;
+    recordingActiveRef.current = false;
 
     const mr = mediaRecorderRef.current;
     const currentTurn = turnSeqRef.current;
@@ -254,10 +276,11 @@ export default function ChatPage() {
     setVoiceStatus('Transcribing speech…');
     setWaveHeights(Array(12).fill(4));
   }, []);
+  finalizeVoiceTurnRef.current = finalizeVoiceTurn;
 
-  // ── Waveform animation & Client-side VAD ─────────────────────────────────
+  // ── Waveform animation & Client-side VAD & Barge-in Monitor ──────────────
   const animateWave = useCallback(() => {
-    if (!analyserRef.current || autoFinalizingRef.current) return;
+    if (!analyserRef.current || !voiceActiveRef.current) return;
     const data = new Uint8Array(analyserRef.current.frequencyBinCount);
     analyserRef.current.getByteFrequencyData(data);
     const step = Math.floor(data.length / 12);
@@ -267,61 +290,85 @@ export default function ChatPage() {
     });
     setWaveHeights(heights);
 
-    const rms = Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length);
+    const { totalRms, speechRms } = computeAudioMetrics(data);
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'vad_energy', rms }));
+      wsRef.current.send(JSON.stringify({ type: 'vad_energy', rms: totalRms }));
     }
 
-    // ── VAD Auto-detection Logic ──
-    const SPEECH_THRESHOLD = 18.0;
-    const MIN_SPEECH_MS    = 350;  // Must speak for >350ms to count as real speech
-    const SILENCE_TIMEOUT  = 1200; // 1.2s silence after speech triggers auto-stop
+    // ── Mode A: User's turn to speak (recording active) ──
+    if (recordingActiveRef.current) {
+      const SPEECH_THRESHOLD = 18.0;
+      const MIN_SPEECH_MS    = 350;  // Must speak for >350ms to count as real speech
+      const SILENCE_TIMEOUT  = 1200; // 1.2s silence after speech triggers auto-stop
 
-    if (rms > SPEECH_THRESHOLD) {
-      if (speechStartRef.current === null) {
-        speechStartRef.current = Date.now();
-      }
-      if (Date.now() - speechStartRef.current >= MIN_SPEECH_MS) {
-        speechDetectedRef.current = true;
-        if (!isSpeakingRef.current) {
-          isSpeakingRef.current = true;
-          setVoiceSpeaking(true);
-          setVoiceStatus('Listening (speaking)…');
-          // ── BARGE-IN: Stop TTS when user starts speaking ──
-          if (isPlayingRef.current || audioQueueRef.current.length > 0) {
-            console.log('[VAD] Barge-in: user speaking, stopping TTS');
-            stopTTS();
-            audioQueueRef.current = [];
-            isPlayingRef.current = false;
-            // Send interrupt to server so it stops generating TTS
-            if (wsRef.current?.readyState === WebSocket.OPEN) {
-              wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
+      if (speechRms > SPEECH_THRESHOLD) {
+        if (speechStartRef.current === null) {
+          speechStartRef.current = Date.now();
+        }
+        if (Date.now() - speechStartRef.current >= MIN_SPEECH_MS) {
+          speechDetectedRef.current = true;
+          if (!isSpeakingRef.current) {
+            isSpeakingRef.current = true;
+            setVoiceSpeaking(true);
+            setVoiceStatus('Listening (speaking)…');
+          }
+        }
+        silenceStartRef.current = null;
+      } else {
+        speechStartRef.current = null;
+        if (isSpeakingRef.current) {
+          isSpeakingRef.current = false;
+          setVoiceSpeaking(false);
+          setVoiceStatus('Listening…');
+        }
+        // If user has spoken at least once in this turn, check silence duration
+        if (speechDetectedRef.current) {
+          if (silenceStartRef.current === null) {
+            silenceStartRef.current = Date.now();
+          } else if (Date.now() - silenceStartRef.current >= SILENCE_TIMEOUT) {
+            // User finished speaking! Auto-send to server
+            console.log('[VAD] Silence detected after speech. Auto-finalizing turn…');
+            if (finalizeVoiceTurnRef.current) {
+              finalizeVoiceTurnRef.current();
             }
           }
         }
       }
-      silenceStartRef.current = null;
-    } else {
-      speechStartRef.current = null;
-      if (isSpeakingRef.current) {
-        isSpeakingRef.current = false;
-        setVoiceSpeaking(false);
-      }
-      // If user has spoken at least once in this turn, check silence duration
-      if (speechDetectedRef.current) {
-        if (silenceStartRef.current === null) {
-          silenceStartRef.current = Date.now();
-        } else if (Date.now() - silenceStartRef.current >= SILENCE_TIMEOUT) {
-          // User finished speaking! Auto-send to server
-          console.log('[VAD] Silence detected after speech. Auto-finalizing turn…');
-          finalizeVoiceTurn();
-          return;
+    } 
+    // ── Mode B: AI is Thinking or Speaking (Barge-in detection) ──
+    else {
+      const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
+      if (isAIActive) {
+        const BARGE_IN_THRESHOLD = 26.0; // Higher threshold to reject noise and speaker leakage
+        const MIN_BARGE_IN_MS    = 400;  // Must be sustained speech > 400ms
+
+        if (speechRms > BARGE_IN_THRESHOLD) {
+          if (bargeInStartRef.current === null) {
+            bargeInStartRef.current = Date.now();
+          } else if (Date.now() - bargeInStartRef.current >= MIN_BARGE_IN_MS) {
+            // ── Genuine user speech detected while AI was speaking → BARGE IN! ──
+            console.log('[VAD] Barge-in triggered! Sustained speech detected during AI output.');
+            bargeInStartRef.current = null;
+            stopTTS();
+            audioQueueRef.current = [];
+            isPlayingRef.current = false;
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
+            }
+            if (startVoiceListeningRef.current) {
+              startVoiceListeningRef.current();
+            }
+          }
+        } else {
+          bargeInStartRef.current = null;
         }
       }
     }
 
-    waveRafRef.current = requestAnimationFrame(animateWave);
-  }, [finalizeVoiceTurn]);
+    if (voiceActiveRef.current) {
+      waveRafRef.current = requestAnimationFrame(animateWave);
+    }
+  }, []);
 
   // ── Start Listening for a Voice Turn ─────────────────────────────────────
   const startVoiceListening = useCallback(async () => {
@@ -330,20 +377,26 @@ export default function ChatPage() {
 
     // Increment turn sequence for the new utterance
     turnSeqRef.current += 1;
-    const currentTurn = turnSeqRef.current;
 
-    // Reset VAD state for the new utterance
-    speechDetectedRef.current = false;
-    speechStartRef.current    = null;
-    silenceStartRef.current   = null;
-    isSpeakingRef.current     = false;
-    autoFinalizingRef.current = false;
-    aiDoneRef.current         = false;
+    // Reset VAD & Barge-in state for the new utterance
+    speechDetectedRef.current  = false;
+    speechStartRef.current     = null;
+    silenceStartRef.current    = null;
+    bargeInStartRef.current    = null;
+    isSpeakingRef.current      = false;
+    aiDoneRef.current          = false;
+    recordingActiveRef.current = true;
 
     try {
       let stream = micStreamRef.current;
       if (!stream || !stream.active) {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          }
+        });
         micStreamRef.current = stream;
       }
 
@@ -354,10 +407,17 @@ export default function ChatPage() {
         await audioContextRef.current.resume();
       }
 
-      const source = audioContextRef.current.createMediaStreamSource(stream);
-      analyserRef.current = audioContextRef.current.createAnalyser();
-      analyserRef.current.fftSize = 256;
-      source.connect(analyserRef.current);
+      if (!analyserRef.current) {
+        const source = audioContextRef.current.createMediaStreamSource(stream);
+        analyserRef.current = audioContextRef.current.createAnalyser();
+        analyserRef.current.fftSize = 256;
+        source.connect(analyserRef.current);
+      }
+
+      // Stop previous recorder if active
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        try { mediaRecorderRef.current.stop(); } catch (_) {}
+      }
 
       const { mime: recMime, ext: recExt } = pickRecorderFormat();
       const mrOptions = recMime ? { mimeType: recMime } : {};
@@ -390,11 +450,12 @@ export default function ChatPage() {
       waveRafRef.current = requestAnimationFrame(animateWave);
     } catch (err) {
       console.error('[Mic Error]', err);
+      recordingActiveRef.current = false;
       addMsg('ai', `⚠️ Microphone error: ${err.message}`, 'error');
     }
   }, [animateWave]);
 
-  // Keep ref in sync so playNextInQueue can call it without circular deps
+  // Keep ref in sync so playNextInQueue & animateWave can call it without circular deps
   startVoiceListeningRef.current = startVoiceListening;
 
   // ── WebSocket setup ─────────────────────────────────────────────────────
@@ -486,6 +547,7 @@ export default function ChatPage() {
         stopTTS();
         audioQueueRef.current = [];
         isPlayingRef.current = false;
+        aiStreamingRef.current = false;
         setVoiceProcessing(false);
         setVoiceStatus('Interrupted');
       } else if (msg.type === 'error') {
@@ -495,7 +557,7 @@ export default function ChatPage() {
         console.error('[WS Error]', msg.message);
       }
     };
-  }, []);
+  }, [playNextInQueue]);
 
   useEffect(() => {
     connectWS();
@@ -522,7 +584,8 @@ export default function ChatPage() {
 
   // ── Stop Voice Completely ────────────────────────────────────────────────
   const stopVoice = () => {
-    autoFinalizingRef.current = true;
+    recordingActiveRef.current = false;
+    setVoiceActiveSync(false);
     cancelAnimationFrame(waveRafRef.current);
 
     const mr = mediaRecorderRef.current;
@@ -537,8 +600,8 @@ export default function ChatPage() {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
     }
+    analyserRef.current = null;
     mediaRecorderRef.current = null;
-    setVoiceActiveSync(false);
     setVoiceSpeaking(false);
     setVoiceProcessing(false);
     setVoiceStatus('');
