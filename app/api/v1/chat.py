@@ -365,13 +365,9 @@ async def websocket_voice_channel(
 
             # ── Audio chunk accumulation ──────────────────────────────────────
             if msg_type == "audio_chunk":
-                chunk_turn = msg.get("turn", session.current_turn_seq)
-                if chunk_turn == session.current_turn_seq:
-                    chunk_b64 = msg.get("data", "")
-                    if chunk_b64:
-                        session.audio_chunks.append(base64.b64decode(chunk_b64))
-                else:
-                    logger.debug(f"[WS] Dropped stray chunk from turn {chunk_turn} (active turn={session.current_turn_seq})")
+                chunk_b64 = msg.get("data", "")
+                if chunk_b64:
+                    session.audio_chunks.append(base64.b64decode(chunk_b64))
 
                 # If AI is streaming and user starts speaking, interrupt
                 if session.ai_streaming and session.current_task and not session.interrupted:

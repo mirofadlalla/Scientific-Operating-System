@@ -317,17 +317,16 @@ export default function ChatPage() {
 
       mr.ondataavailable = (e) => {
         if (e.data.size === 0 || wsRef.current?.readyState !== WebSocket.OPEN) return;
-        if (autoFinalizingRef.current && mr.state === 'inactive') return;
         const reader = new FileReader();
         reader.onload = () => {
-          if (autoFinalizingRef.current && mr.state === 'inactive') return;
-          const b64 = reader.result.split(',')[1];
-          wsRef.current.send(JSON.stringify({
-            type: 'audio_chunk',
-            data: b64,
-            turn: currentTurn,
-            format: recExt
-          }));
+          const b64 = reader.result?.split(',')[1];
+          if (b64 && wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({
+              type: 'audio_chunk',
+              data: b64,
+              format: recExt
+            }));
+          }
         };
         reader.readAsDataURL(e.data);
       };
@@ -566,7 +565,6 @@ export default function ChatPage() {
         updateMsg(aiId, full);
       }
       setMessages(prev => prev.map(m => m.id === aiId ? { ...m, streaming: false } : m));
-      if (full) playGroqAudio(full, soundEnabledRef);
     } catch (err) {
       clearInterval(iv);
       setMessages(prev => prev.filter(m => m.id !== thinkId));
