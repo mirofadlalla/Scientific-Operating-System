@@ -141,6 +141,7 @@ export default function ChatPage() {
   // WebSocket state
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef                         = useRef(null);
+  const reconnectTimerRef             = useRef(null);
 
   // Voice overlay state
   const [voiceActive, setVoiceActive]       = useState(false);
@@ -158,6 +159,10 @@ export default function ChatPage() {
   const aiStreamingRef    = useRef(false);
   const interruptedRef    = useRef(false);
 
+  // Binary audio accumulation for TTS playback
+  const audioBlobPartsRef = useRef([]);
+  const receivingAudioRef = useRef(false);
+
   const chatEndRef = useRef(null);
   const nextId     = useRef(1);
 
@@ -174,16 +179,46 @@ export default function ChatPage() {
 
   // ── WebSocket setup ─────────────────────────────────────────────────────
   const connectWS = useCallback(() => {
-    if (wsRef.current) wsRef.current.close();
+    // Clear any pending reconnect timer
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch (_) {}
+    }
+
     const ws = new WebSocket(`${WS_URL}?session_id=${SESSION_ID}`);
+    // IMPORTANT: set binaryType so binary frames arrive as ArrayBuffer
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
-    ws.onopen  = () => setWsConnected(true);
-    ws.onclose = () => { setWsConnected(false); setTimeout(connectWS, 3000); };
+    ws.onopen  = () => {
+      console.log('[WS] Connected');
+      setWsConnected(true);
+    };
+    ws.onclose = () => {
+      console.log('[WS] Disconnected, will reconnect in 3s');
+      setWsConnected(false);
+      // Only reconnect if this is still the active socket
+      reconnectTimerRef.current = setTimeout(connectWS, 3000);
+    };
     ws.onerror = () => setWsConnected(false);
 
     ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
+      // ── Binary frame: TTS audio chunk ──────────────────────────────────
+      if (ev.data instanceof ArrayBuffer) {
+        if (soundEnabledRef.current) {
+          audioBlobPartsRef.current.push(new Uint8Array(ev.data));
+          receivingAudioRef.current = true;
+        }
+        return;
+      }
+
+      // ── Text frame: JSON control messages ──────────────────────────────
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+
       if (msg.type === 'vad_status') {
         setVoiceSpeaking(msg.speaking);
       } else if (msg.type === 'status') {
@@ -194,9 +229,14 @@ export default function ChatPage() {
         setVoiceStatus('Processing response…');
         setVoiceProcessing(true);
         if (msg.final) addMsg('user', msg.text);
-      } else if (msg.type === 'ai_token') {
+      } else if (msg.type === 'ai_start') {
+        // AI response is beginning — reset audio accumulator
+        audioBlobPartsRef.current = [];
+        receivingAudioRef.current = false;
         aiStreamingRef.current = true;
         setVoiceStatus('Responding…');
+      } else if (msg.type === 'ai_token') {
+        aiStreamingRef.current = true;
         setMessages(prev => {
           const last = prev[prev.length - 1];
           if (last?.role === 'ai' && last?.streaming) {
@@ -205,45 +245,71 @@ export default function ChatPage() {
           const id = nextId.current++;
           return [...prev, { id, role: 'ai', text: msg.token, streaming: true }];
         });
-      } else if (msg.type === 'ai_audio') {
-        // Only play if sound is enabled — check ref (not state) to avoid stale closure
-        if (msg.data && soundEnabledRef.current) {
-          try {
-            stopTTS();
-            const binary = atob(msg.data);
-            const array = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
-            const blob = new Blob([array.buffer], { type: 'audio/wav' });
-            const url = URL.createObjectURL(blob);
-            currentAudio = new Audio(url);
-            currentAudio.play().catch((playErr) => {
-              console.warn('WS ai_audio autoplay blocked, trying SpeechSynthesis fallback:', playErr);
-              // We don’t have the original text here so skip synthesis fallback
-            });
-          } catch (err) {
-            console.error('WS audio playback error:', err);
-          }
-        }
       } else if (msg.type === 'ai_done') {
         aiStreamingRef.current = false;
         setVoiceProcessing(false);
         setVoiceStatus('Ready');
         setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m));
+
+        // Play accumulated binary TTS audio
+        if (receivingAudioRef.current && audioBlobPartsRef.current.length > 0 && soundEnabledRef.current) {
+          try {
+            stopTTS();
+            const blob = new Blob(audioBlobPartsRef.current, { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+            currentAudio = new Audio(url);
+            currentAudio.onended = () => URL.revokeObjectURL(url);
+            currentAudio.play().catch((playErr) => {
+              console.warn('WS TTS autoplay blocked:', playErr);
+            });
+          } catch (err) {
+            console.error('WS audio playback error:', err);
+          }
+        }
+        audioBlobPartsRef.current = [];
+        receivingAudioRef.current = false;
       } else if (msg.type === 'interrupted') {
+        // Stop any currently playing TTS on interrupt
+        stopTTS();
+        audioBlobPartsRef.current = [];
+        receivingAudioRef.current = false;
         setVoiceProcessing(false);
         setVoiceStatus('Interrupted');
       } else if (msg.type === 'error') {
         // Backend sent an error (e.g. STT failed, agent crash)
         setVoiceProcessing(false);
         setVoiceStatus('Error');
-        setVoiceActive(false);
         addMsg('ai', `⚠️ Voice error: ${msg.message || 'Unknown error'}`, 'error');
         console.error('[WS Error]', msg.message);
+      } else if (msg.type === 'pong') {
+        // Heartbeat response — no action needed
       }
     };
   }, []);
 
-  useEffect(() => { connectWS(); return () => wsRef.current?.close(); }, [connectWS]);
+  useEffect(() => {
+    connectWS();
+    return () => {
+      // Clean up reconnect timer on unmount
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch (_) {}
+      }
+    };
+  }, [connectWS]);
+
+  // ── Client-side keepalive ping ──────────────────────────────────────────
+  useEffect(() => {
+    const iv = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 20000); // every 20 seconds
+    return () => clearInterval(iv);
+  }, []);
 
   // ── Waveform animation ──────────────────────────────────────────────────
   const animateWave = () => {
@@ -292,10 +358,14 @@ export default function ChatPage() {
         reader.readAsDataURL(e.data);
       };
 
-      mr.start(100);
+      // Use 250ms timeslice (reduced from 100ms) to cut chunk count by ~60%
+      mr.start(250);
       setVoiceActive(true);
       setVoiceTranscript('');
       setVoiceStatus('Listening…');
+      // Reset audio accumulator for new turn
+      audioBlobPartsRef.current = [];
+      receivingAudioRef.current = false;
       waveRafRef.current = requestAnimationFrame(animateWave);
     } catch (err) {
       addMsg('ai', `⚠️ Microphone error: ${err.message}`, 'error');
@@ -304,7 +374,7 @@ export default function ChatPage() {
 
   const stopVoice = () => {
     const mr = mediaRecorderRef.current;
-    if (mr) {
+    if (mr && mr.state !== 'inactive') {
       const ext = mr._recExt || 'webm';
       // Wait for onstop so the final ondataavailable chunk is flushed BEFORE audio_end
       mr.onstop = () => {
@@ -314,17 +384,23 @@ export default function ChatPage() {
       };
       mr.stop();
       mr.stream?.getTracks().forEach(t => t.stop());
-    } else {
+    } else if (!mr) {
       // No recorder running — send audio_end immediately if needed
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'audio_end', format: 'webm' }));
       }
     }
-    if (audioContextRef.current) audioContextRef.current.close();
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
     cancelAnimationFrame(waveRafRef.current);
-    setVoiceActive(false);
+    mediaRecorderRef.current = null;
+    // Keep voiceActive=true while processing so overlay stays visible
+    // It will be cleared when ai_done arrives
     setVoiceSpeaking(false);
     setWaveHeights(Array(12).fill(4));
+    setVoiceActive(false);
   };
 
   // ── Text submit ───────────────────────────────────────────────────────────

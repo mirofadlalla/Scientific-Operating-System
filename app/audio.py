@@ -1,8 +1,9 @@
 """
 Audio Processing Module - STT (Groq Whisper) and TTS capabilities for agents
 - STT: Groq whisper-large-v3-turbo (uses existing GROQ_API_KEY, no OpenAI needed)
-- TTS: OpenAI TTS when available, browser SpeechSynthesis as fallback
+- TTS: Groq Orpheus Arabic/English with OpenAI TTS fallback
 - Streaming: Chunked audio transcription for WebSocket voice channel
+- Sentence-chunked TTS: yields audio per sentence for low-latency playback
 """
 import sys
 import io as _io
@@ -13,12 +14,54 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 import io
+import re
 import asyncio
 import struct
 import math
+import time
+import json
+import logging
+from typing import AsyncIterator
 from pathlib import Path
 from openai import AsyncOpenAI
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+def voice_log(event: str, **kwargs):
+    """Structured diagnostic log for voice pipeline — only emits when VOICE_DEBUG=true."""
+    if not settings.VOICE_DEBUG:
+        return
+    entry = {"event": event, "ts": round(time.time(), 3), **kwargs}
+    print(f"[VOICE_DEBUG] {json.dumps(entry, ensure_ascii=False)}")
+
+
+def split_sentences(text: str) -> list[str]:
+    """
+    Split text into sentence-sized chunks for incremental TTS.
+
+    Handles:
+      - English sentence endings (. ! ?)
+      - Arabic sentence endings (. ، ؟ !)
+      - Markdown bullets / numbered lists (treated as boundaries)
+      - Newlines as boundaries
+    Returns non-empty stripped strings only.
+    """
+    # Split on sentence-ending punctuation followed by whitespace, or on newlines
+    # \u060C = Arabic comma ،   \u061F = Arabic question mark ؟
+    parts = re.split(r'(?<=[.!?\u060C\u061F])\s+|\n+', text)
+    sentences = [p.strip() for p in parts if p.strip()]
+
+    # Merge very short fragments (< 6 chars) with previous sentence
+    # Threshold is kept low because Arabic text is denser per character
+    merged = []
+    for s in sentences:
+        if merged and len(s) < 6:
+            merged[-1] = merged[-1] + " " + s
+        else:
+            merged.append(s)
+    return merged
 
 
 class AudioProcessor:
@@ -93,6 +136,7 @@ class AudioProcessor:
             audio_stream = io.BytesIO(audio_file)
             audio_stream.name = f"recording.{effective_format}"
 
+            stt_start = time.time()
             print(f"[STT] Sending {len(audio_file):,} bytes as '{effective_format}' to Whisper…")
 
             transcript = await self.groq_client.audio.transcriptions.create(
@@ -104,7 +148,10 @@ class AudioProcessor:
 
             # Groq returns plain text when response_format="text"
             result_text = transcript if isinstance(transcript, str) else transcript.text
-            print(f"[STT OK] {len(audio_file):,} bytes → \"{result_text[:80]}\"")
+            stt_ms = round((time.time() - stt_start) * 1000, 1)
+            print(f"[STT OK] {len(audio_file):,} bytes → \"{result_text[:80]}\" ({stt_ms}ms)")
+            voice_log("stt_completed", audio_bytes=len(audio_file), format=effective_format,
+                       latency_ms=stt_ms, transcript_preview=result_text[:60])
             return result_text.strip()
 
         except Exception as exc:
@@ -115,6 +162,7 @@ class AudioProcessor:
         """Concatenate audio chunks and transcribe as a single request."""
         combined = b"".join(chunks)
         print(f"[STT] Assembled {len(chunks)} chunk(s) → {len(combined):,} bytes total")
+        voice_log("stt_chunks_assembled", chunk_count=len(chunks), total_bytes=len(combined))
         return await self.transcribe_audio(combined, audio_format)
 
 
@@ -134,11 +182,11 @@ class AudioProcessor:
         Returns:
             WAV/Audio bytes
         """
-        import re
         is_arabic = bool(re.search(r'[\u0600-\u06FF]', text))
         model = "canopylabs/orpheus-arabic-saudi" if is_arabic else "canopylabs/orpheus-v1-english"
         selected_voice = voice if voice != "auto" else ("abdullah" if is_arabic else "hannah")
 
+        tts_start = time.time()
         try:
             response = await self.groq_client.audio.speech.create(
                 model=model,
@@ -153,7 +201,10 @@ class AudioProcessor:
             else:
                 audio_bytes = response
 
-            print(f"[TTS OK] {model} ({selected_voice}) -> {len(audio_bytes):,} bytes audio")
+            tts_ms = round((time.time() - tts_start) * 1000, 1)
+            print(f"[TTS OK] {model} ({selected_voice}) -> {len(audio_bytes):,} bytes audio ({tts_ms}ms)")
+            voice_log("tts_completed", model=model, voice=selected_voice,
+                       audio_bytes=len(audio_bytes), latency_ms=tts_ms)
             return audio_bytes
 
         except Exception as exc:
@@ -175,6 +226,44 @@ class AudioProcessor:
                 except Exception as oa_err:
                     print(f"[TTS FAIL] OpenAI fallback error: {oa_err}")
             raise ValueError(f"Speech synthesis failed: {exc}") from exc
+
+    async def synthesize_speech_chunked(
+        self, text: str, voice: str = "auto"
+    ) -> AsyncIterator[bytes]:
+        """
+        Sentence-chunked TTS: splits text into sentences and yields WAV audio
+        for each sentence individually.  This lets the WebSocket handler send
+        audio to the browser as soon as the first sentence is synthesized,
+        dramatically reducing time-to-first-audio.
+
+        Yields:
+            bytes — WAV audio for each sentence chunk
+        """
+        sentences = split_sentences(text)
+        if not sentences:
+            return
+
+        voice_log("tts_chunked_start", sentence_count=len(sentences),
+                   text_preview=text[:80])
+
+        # If only one sentence or very short text, just do a single TTS call
+        if len(sentences) == 1:
+            audio = await self.synthesize_speech(sentences[0], voice)
+            yield audio
+            return
+
+        for idx, sentence in enumerate(sentences):
+            if not sentence.strip():
+                continue
+            try:
+                audio = await self.synthesize_speech(sentence, voice)
+                voice_log("tts_chunk_ready", chunk_index=idx,
+                           sentence_len=len(sentence), audio_bytes=len(audio))
+                yield audio
+            except Exception as exc:
+                logger.warning(f"[TTS chunk {idx}] Failed for sentence: {exc}")
+                # Continue with remaining sentences — don't break the stream
+                continue
 
     # ──────────────────────────────────────────────────────────────────────────
     # VAD  —  Energy-based Voice Activity Detection (no extra libraries)

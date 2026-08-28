@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     MONGODB_URI: str     = os.getenv("MONGODB_URI", "")
     MONGODB_DB_NAME: str = os.getenv("MONGODB_DB_NAME", "ailixir")
 
+    # ── Voice Pipeline ────────────────────────────────────────────────────────
+    VOICE_DEBUG: bool = os.getenv("VOICE_DEBUG", "").lower() in ("1", "true", "yes")
+
     # ── JWT ───────────────────────────────────────────────────────────────────
     # Used to sign access tokens issued after login.
     # Generate a strong random value: python -c "import secrets; print(secrets.token_hex(32))"
