@@ -24,9 +24,13 @@ class Settings(BaseSettings):
     DRUG_REPURPOSING_URL: str = os.getenv("DRUG_REPURPOSING_URL", "https://RottenShadow-ailixir-drug-repurposing.hf.space")
     GENERATION_SERVICE_URL: str = os.getenv("GENERATION_SERVICE_URL", "https://shdwRow-ailixir-generation.hf.space")
 
-    # Available Models
-    ORCHESTRATOR_MODEL: str = "llama-3.3-70b-versatile"
-    QWEN_MODEL: str = "qwen/qwen3-32b"
+    # Available Models (Groq Reasoning & Routing)
+    ROUTING_MODEL: str      = os.getenv("ROUTING_MODEL", "openai/gpt-oss-20b")        # Fast tasks & intent routing
+    REASONING_MODEL: str    = os.getenv("REASONING_MODEL", "openai/gpt-oss-120b")     # Heavy biomedical reasoning & synthesis
+    ORCHESTRATOR_MODEL: str = os.getenv("ORCHESTRATOR_MODEL", "openai/gpt-oss-120b")  # Backward-compatible alias
+    QWEN_MODEL: str         = "qwen/qwen3-32b"
+    QWEN_API_BASE: str      = os.getenv("QWEN_API_BASE", "")
+    QWEN_API_KEY: str       = os.getenv("QWEN_API_KEY", "")
 
     # Redis Configuration
     REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")

@@ -118,7 +118,7 @@ Chemical Agent            Medical Agent
 | Layer | Technology |
 |-------|-----------|
 | API Framework | FastAPI + Uvicorn |
-| LLM Provider | Groq (`llama-3.3-70b-versatile`) |
+| LLM Provider | Groq (Reasoning: `openai/gpt-oss-120b`, Routing: `openai/gpt-oss-20b`) |
 | Embeddings | HuggingFace (`intfloat/multilingual-e5-large-instruct`) |
 | Vector Store | Weaviate (primary) / In-Memory + Disk (fallback) |
 | STT | Groq Whisper (`whisper-large-v3-turbo`) |
@@ -180,50 +180,70 @@ Scientific-Operating-System/
 ├── app/
 │   ├── __init__.py
 │   ├── config.py                    # Pydantic settings — all env vars
-│   ├── main.py                      # FastAPI app, routes, lifespan, WebSocket
-│   ├── audio.py                     # AudioProcessor: STT (Groq) + TTS (OpenAI)
+│   ├── main.py                      # FastAPI root app, middleware wiring, /health, /docs
+│   ├── audio.py                     # AudioProcessor: STT (Groq Whisper) + TTS (Groq / OpenAI)
+│   ├── monitoring.py                # In-process latency, token, and agent metrics tracker
+│   │
+│   ├── core/                        # Central application kernel
+│   │   ├── auth.py                  # JWT creation, verification, password hashing
+│   │   ├── deps.py                  # Shared singleton dependencies (RAGAgent, MotorDB)
+│   │   ├── lifespan.py              # Startup & shutdown orchestration (Redis, RQ, Weaviate)
+│   │   ├── middleware.py            # ReadinessMiddleware & MonitoringMiddleware
+│   │   ├── orchestration.py         # Multi-agent routing kernel (route_and_stream)
+│   │   └── state.py                 # Thread-safe global runtime state
+│   │
+│   ├── api/
+│   │   └── v1/                      # Versioned REST & WebSocket APIs
+│   │       ├── router.py            # Combined v1 router mounted at /api/v1
+│   │       ├── auth.py              # POST /api/v1/auth/login, /register, /me
+│   │       ├── chat.py              # POST /api/v1/orchestrate, WS /api/v1/ws/voice
+│   │       ├── audio.py             # POST /api/v1/audio/transcribe, /synthesize, /agent-voice
+│   │       ├── rag.py               # POST /api/v1/rag/ingest, GET /status, /ingest/status
+│   │       └── monitoring.py        # GET /api/v1/metrics, /metrics/requests
+│   │
+│   ├── schemas/                     # Pydantic request/response models
+│   │   ├── auth.py                  # UserLogin, UserRegister, TokenResponse
+│   │   ├── chat.py                  # UserQuery, OrchestratorOutput
+│   │   └── audio.py                 # AudioSynthesizeRequest
+│   │
+│   ├── database/                    # MongoDB Atlas integration
+│   │   ├── mongodb.py               # Motor async database client connection
+│   │   └── user_repository.py       # User persistence and authentication lookup
 │   │
 │   ├── orchestrator/
 │   │   ├── __init__.py
-│   │   ├── brain.py                 # OrchestratorBrain: intent classification
-│   │   └── prompts.py               # All LLM system prompts
+│   │   ├── brain.py                 # OrchestratorBrain fallback classifier
+│   │   └── prompts.py               # Centralized LLM system prompts
 │   │
 │   ├── agents/
 │   │   ├── __init__.py
-│   │   ├── voice_wrapper.py         # VoiceEnabledAgent: wraps any agent with TTS
+│   │   ├── voice_wrapper.py         # VoiceEnabledAgent wrapper
 │   │   ├── chemical/
-│   │   │   ├── __init__.py
-│   │   │   ├── agent.py             # ChemicalAgent: ADMET, similarity, repurposing
-│   │   │   └── search.py            # (FAISS placeholder)
+│   │   │   ├── agent.py             # ChemicalAgent: ADMET, similarity, screening
+│   │   │   └── search.py            # FAISS / similarity helpers
 │   │   ├── medical/
 │   │   │   └── agent.py             # MedicalAgent: biomedical LLM reasoning
 │   │   └── customer_support/
-│   │       ├── __init__.py
-│   │       ├── agent.py             # CustomerSupportRAGAgent: RAG singleton
-│   │       └── ai-lixir-rag-system/
-│   │           ├── main.py          # Standalone entry point
-│   │           ├── chunking/
-│   │           │   ├── base.py      # BaseChunkingStrategy ABC
-│   │           │   ├── factory.py   # ChunkingFactory
-│   │           │   └── strategies.py # Markdown, Sentence, Token strategies
-│   │           └── src/
-│   │               ├── config.py    # RAG-specific config (dual-mode)
-│   │               ├── embeddings.py # EmbeddingProviderFactory + E5InstructEmbedding
-│   │               ├── engine.py    # RAGEngineBuilder: hybrid query engine
-│   │               ├── indexer.py   # VectorIndexManager: Weaviate + disk + RAM
-│   │               └── ingestion_service.py # RAGIngestionService: file → nodes → index
+│   │       ├── agent.py             # CustomerSupportRAGAgent: hybrid search singleton
+│   │       └── ai-lixir-rag-system/ # Complete LlamaIndex pipeline & chunking strategies
 │   │
 │   └── memory/
-│       ├── __init__.py
-│       ├── short_term.py            # ShortTermMemory: in-RAM ring buffer
+│       ├── short_term.py            # ShortTermMemory: bounded ring buffer (deque)
 │       └── long_term.py             # LongTermMemory: Redis + JSON fallback
 │
-├── tests/
-│   └── test_main.py
+├── frontend/                        # React (Vite + Recharts) Single Page Application
+│   ├── src/
+│   │   ├── pages/                   # ChatPage, RagPage, MonitorPage
+│   │   ├── components/              # NavBar, VoiceOverlay
+│   │   └── config.js                # API_BASE & WS_URL configuration
 │
-├── requirements.txt                 # Pinned dependency versions
-├── Dockerfile                       # HF Spaces Docker build
-├── docker-compose.yml               # Local dev compose
+├── tests/
+│   ├── conftest.py                  # Test environment & mock fixtures
+│   └── test_main.py                 # Comprehensive v2 test suite
+│
+├── requirements.txt                 # Pinned dependencies
+├── Dockerfile                       # Container definition for Hugging Face Spaces
+├── docker-compose.yml               # Local multi-service compose (app, redis, weaviate)
 └── .env.example                     # Environment variable template
 ```
 
@@ -252,7 +272,9 @@ class Settings(BaseSettings):
     DRUG_REPURPOSING_URL: str    # Virtual screening service
     GENERATION_SERVICE_URL: str  # Generation utility service
     
-    ORCHESTRATOR_MODEL: str      # Default: llama-3.3-70b-versatile
+    ROUTING_MODEL: str           # Default: openai/gpt-oss-20b (fast intent routing)
+    REASONING_MODEL: str         # Default: openai/gpt-oss-120b (biomedical reasoning & synthesis)
+    ORCHESTRATOR_MODEL: str      # Default: openai/gpt-oss-120b (backward compatible alias)
     QWEN_MODEL: str              # Default: qwen/qwen3-32b (fallback classifier)
     
     # Redis (optional — JSON fallback if unavailable)
@@ -966,15 +988,35 @@ def is_speech(rms: float, threshold: float = 500.0) -> bool:
 
 ## 12. API Reference
 
-### 12.1 HTTP Endpoints
+### 12.1 Root & System Endpoints
 
 #### `GET /`
-Returns the web UI (`app/index.html`).
+Redirects (HTTP 307) to `/docs` interactive Swagger documentation.
 
 ---
 
-#### `POST /orchestrate`
-Main text query endpoint. Streams response as plain text.
+#### `GET /health`
+Lightweight keep-alive probe. Pinned by frontend every 4 minutes.
+**Response:** `{"status": "ok", "timestamp": 1724860000.12}`
+
+---
+
+### 12.2 Authentication Endpoints (`/api/v1/auth`)
+
+#### `POST /api/v1/auth/login`
+Authenticates a user against MongoDB Atlas and returns a signed JWT access token.
+**Request:** `{"username": "admin", "password": "..."}`
+**Response:** `{"access_token": "eyJhbGci...", "token_type": "bearer", "username": "admin"}`
+
+#### `POST /api/v1/auth/register`
+Registers a new user with bcrypt-hashed credentials.
+
+---
+
+### 12.3 Chat & Orchestration (`/api/v1`)
+
+#### `POST /api/v1/orchestrate`
+Main text query endpoint. Streams response as plain text (`text/plain`).
 
 **Request body:**
 ```json
@@ -989,11 +1031,13 @@ Main text query endpoint. Streams response as plain text.
 
 ---
 
-#### `POST /audio/transcribe`
-Transcribes audio file to text using Groq Whisper.
+### 12.4 Audio Endpoints (`/api/v1/audio`)
+
+#### `POST /api/v1/audio/transcribe`
+Transcribes audio file to text using Groq Whisper (`whisper-large-v3-turbo`).
 
 **Request:** `multipart/form-data`
-- `file`: Audio file (webm, wav, mp3, etc.)
+- `file`: Audio file (webm, wav, mp3, ogg, etc.)
 - `audio_format`: Format string (default: "webm")
 
 **Response:**
@@ -1008,32 +1052,35 @@ Transcribes audio file to text using Groq Whisper.
 
 ---
 
-#### `POST /audio/synthesize`
-Converts text to speech (requires `OPENAI_API_KEY`).
+#### `POST /api/v1/audio/synthesize`
+Converts text to speech using Groq Orpheus models (with OpenAI TTS fallback).
 
 **Request body:**
 ```json
-{"text": "The ADMET profile of aspirin is...", "voice": "nova"}
+{"text": "The ADMET profile of aspirin is...", "voice": "auto"}
 ```
 
-**Response:** `StreamingResponse` (audio/mpeg), MP3 bytes.
+**Response:** `StreamingResponse` (audio/wav), audio bytes.
 
 ---
 
-#### `POST /audio/agent-voice`
+#### `POST /api/v1/audio/agent-voice`
 Full voice-to-voice pipeline: STT → Agent → TTS.
 
 **Request:** `multipart/form-data`
 - `file`: Audio file
 - `session_id`, `user_id`, `audio_format`, `voice`: Form fields
 
-**Response:** MP3 audio if `OPENAI_API_KEY` set, else JSON with text.
+**Response:** WAV audio stream with ASCII-safe `X-Agent-Text` header.
 
 ---
 
-#### `POST /rag/ingest`
-Ingests a Markdown file into the knowledge base. Runs as a background task.
+### 12.5 Knowledge Base RAG Endpoints (`/api/v1/rag`)
 
+#### `POST /api/v1/rag/ingest`
+Ingests a Markdown or Text document into the knowledge base (requires JWT token). Runs as a background task.
+
+**Headers:** `Authorization: Bearer <token>`
 **Request:** `multipart/form-data`
 - `file`: `.md` or `.txt` file
 - `strategy`: `markdown` | `sentence` | `token` (default: `markdown`)
@@ -1051,8 +1098,8 @@ Ingests a Markdown file into the knowledge base. Runs as a background task.
 
 ---
 
-#### `GET /rag/ingest/status/{job_id}`
-Polls background ingestion job status.
+#### `GET /api/v1/rag/ingest/status/{job_id}`
+Polls background ingestion job status (mirrored in Redis & in-memory).
 
 **Response states:** `pending` → `reading` → `chunking` → `embedding` → `indexing` → `reloading` → `completed` | `failed`
 
@@ -1069,7 +1116,7 @@ Polls background ingestion job status.
 
 ---
 
-#### `GET /rag/status`
+#### `GET /api/v1/rag/status`
 RAG system health check.
 
 **Response:**
@@ -1088,9 +1135,9 @@ RAG system health check.
 
 ---
 
-### 12.2 WebSocket Voice Channel
+### 12.6 WebSocket Voice Channel
 
-**Endpoint:** `ws://{host}/ws/voice?session_id={id}`
+**Endpoint:** `ws://{host}/api/v1/ws/voice?session_id={id}`
 
 Full-duplex real-time voice channel. Both sides communicate via JSON messages.
 

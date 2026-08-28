@@ -26,13 +26,45 @@ router = APIRouter(prefix="/rag", tags=["Knowledge Base"])
 # Job status helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+_redis_client_instance = None
+_redis_failed = False
+
+def _get_redis_client():
+    """Return a Redis client, checking state or connecting directly if in worker process."""
+    global _redis_client_instance, _redis_failed
+    if _redis_failed:
+        return None
+    lm = getattr(state, "long_memory", None)
+    if lm and getattr(lm, "is_redis", False) and lm.redis_client:
+        return lm.redis_client
+    if getattr(state, "redis_conn", None):
+        return state.redis_conn
+    if _redis_client_instance is None:
+        try:
+            import redis
+            from app.config import settings
+            client = redis.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=settings.REDIS_DB,
+                decode_responses=True,
+                socket_connect_timeout=0.5,
+            )
+            client.ping()
+            _redis_client_instance = client
+        except Exception:
+            _redis_failed = True
+            return None
+    return _redis_client_instance
+
+
 def update_job_status(
     job_id: str,
     status: str,
     message: str = "",
     extra_data: dict | None = None,
 ) -> None:
-    """Write job state to in-process dict and optionally mirror to Redis."""
+    """Write job state to in-process dict and mirror to Redis (works across processes)."""
     data: dict = {
         "status":        status,
         "message":       message,
@@ -48,9 +80,9 @@ def update_job_status(
     state.ingestion_jobs[job_id] = data
 
     try:
-        lm = state.long_memory
-        if lm and hasattr(lm, "is_redis") and lm.is_redis:
-            lm.redis_client.set(f"rag:job:{job_id}", json.dumps(data), ex=3600)
+        r = _get_redis_client()
+        if r:
+            r.set(f"rag:job:{job_id}", json.dumps(data), ex=3600)
     except Exception as exc:
         logger.warning(f"Could not sync job status to Redis: {exc} — using in-memory storage.")
 
@@ -58,9 +90,9 @@ def update_job_status(
 def get_job_status(job_id: str) -> dict:
     """Read job state from Redis (if available) or fall back to in-process dict."""
     try:
-        lm = state.long_memory
-        if lm and hasattr(lm, "is_redis") and lm.is_redis:
-            val = lm.redis_client.get(f"rag:job:{job_id}")
+        r = _get_redis_client()
+        if r:
+            val = r.get(f"rag:job:{job_id}")
             if val:
                 return json.loads(val)
     except Exception as exc:

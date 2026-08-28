@@ -1,13 +1,23 @@
 """
-Test suite for Scientific OS FastAPI application.
-Tests the core endpoints and agent orchestration logic.
+Test suite for Scientific OS v2 FastAPI application.
+Tests core endpoints (/health, /api/v1/orchestrate, /api/v1/rag, /api/v1/metrics, /api/v1/auth)
+and internal agent & memory units.
 """
-
 import json
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock, MagicMock
-from app.main import app, ORCHESTRATOR_SYSTEM_PROMPT
+
+from app.main import app
+from app.orchestrator.prompts import (
+    ORCHESTRATOR_SYSTEM_PROMPT,
+    CHEMICAL_AGENT_SYSTEM_PROMPT,
+    MEDICAL_AGENT_SYSTEM_PROMPT,
+)
+from app.core.orchestration import COMBINED_ORCHESTRATOR_PROMPT
+from app.memory.short_term import ShortTermMemory
+from app.memory.long_term import LongTermMemory
+from app.agents.chemical.agent import _fmt, ChemicalAgent
 
 
 @pytest.fixture
@@ -16,260 +26,151 @@ def client():
     return TestClient(app)
 
 
-class TestRootEndpoint:
-    """Test suite for the root HTML endpoint."""
-    
-    def test_root_path_returns_html_status_200(self, client):
-        """Verify that the root path returns HTTP 200."""
-        response = client.get("/")
+class TestRootAndHealthEndpoints:
+    """Test suite for root redirect and health check endpoints."""
+
+    def test_root_redirects_to_docs(self, client):
+        """Verify that the root path redirects to /docs."""
+        response = client.get("/", follow_redirects=False)
+        assert response.status_code == 307
+        assert response.headers.get("location") == "/docs"
+
+    def test_health_check_returns_ok(self, client):
+        """Verify that the /health endpoint returns 200 OK and timestamp."""
+        response = client.get("/health")
         assert response.status_code == 200
-    
-    def test_root_path_returns_html_content_type(self, client):
-        """Verify that the root path returns HTML content type."""
-        response = client.get("/")
-        assert "text/html" in response.headers.get("content-type", "")
-    
-    def test_root_path_returns_html_content(self, client):
-        """Verify that the root path returns actual HTML content."""
-        response = client.get("/")
-        assert len(response.text) > 0
-        # Basic HTML structure check
-        assert "<" in response.text and ">" in response.text
+        data = response.json()
+        assert data.get("status") == "ok"
+        assert "timestamp" in data
 
 
 class TestOrchestrateEndpoint:
-    """Test suite for the /orchestrate POST endpoint."""
-    
-    def test_orchestrate_endpoint_accepts_post_request(self, client):
-        """Verify that /orchestrate endpoint accepts POST requests."""
+    """Test suite for the /api/v1/orchestrate POST endpoint."""
+
+    def test_orchestrate_endpoint_missing_required_fields(self, client):
+        """Verify that missing required fields return 422 validation error."""
+        payload = {
+            "session_id": "test_session",
+            # Missing user_id and text_input
+        }
+        response = client.post("/api/v1/orchestrate", json=payload)
+        assert response.status_code == 422
+
+    def test_orchestrate_endpoint_streams_tokens(self, client):
+        """Verify that /api/v1/orchestrate accepts requests and streams tokens."""
         payload = {
             "session_id": "test_session_123",
             "user_id": "test_user_456",
             "text_input": "What is EGFR inhibitor?"
         }
-        
-        with patch('app.main.client.chat.completions.create') as mock_create:
-            # Mock the orchestrator routing response
-            mock_orchestrator_response = AsyncMock()
-            mock_orchestrator_response.choices = [
-                MagicMock(message=MagicMock(content=json.dumps({
-                    "intent": "BIOMEDICAL_MECHANISM",
-                    "target_agent": "MEDICAL_AGENT",
-                    "entities": {"compound": "EGFR inhibitor"}
-                })))
-            ]
-            
-            # Mock the synthesis response (streaming)
-            mock_synthesis_response = AsyncMock()
-            mock_synthesis_response.__aiter__ = MagicMock(
-                return_value=[
-                    MagicMock(choices=[MagicMock(delta=MagicMock(content="EGFR inhibitors"))]),
-                    MagicMock(choices=[MagicMock(delta=MagicMock(content=" are "))]),
-                    MagicMock(choices=[MagicMock(delta=MagicMock(content="effective."))])
-                ]
-            )
-            
-            # Set up the mock to return different responses for different calls
-            mock_create.side_effect = [mock_orchestrator_response, mock_synthesis_response]
-            
-            with patch('app.main.chemical_agent.run', new_callable=AsyncMock) as mock_chem_agent:
-                mock_chem_agent.return_value = ""
-                response = client.post("/orchestrate", json=payload)
-        
+
+        async def mock_token_generator(text_input, session_id, user_id):
+            yield "EGFR "
+            yield "inhibitor "
+            yield "result."
+
+        with patch("app.api.v1.chat.route_and_stream", side_effect=mock_token_generator):
+            response = client.post("/api/v1/orchestrate", json=payload)
+
         assert response.status_code == 200
-    
-    def test_orchestrate_endpoint_with_chemical_intent(self, client):
-        """Verify /orchestrate handles chemical analysis intent."""
-        payload = {
-            "session_id": "test_session_chemical",
-            "user_id": "test_user_123",
-            "text_input": "Find similar compounds to aspirin"
-        }
-        
-        with patch('app.main.client.chat.completions.create') as mock_create:
-            # Mock orchestrator response for chemical similarity
-            mock_orchestrator_response = AsyncMock()
-            mock_orchestrator_response.choices = [
-                MagicMock(message=MagicMock(content=json.dumps({
-                    "intent": "CHEMICAL_SIMILARITY",
-                    "target_agent": "CHEMICAL_AGENT",
-                    "entities": {"compound": "aspirin", "smiles": "CC(=O)Oc1ccccc1C(=O)O"}
-                })))
-            ]
-            
-            # Mock synthesis response
-            mock_synthesis_response = AsyncMock()
-            mock_synthesis_response.__aiter__ = MagicMock(
-                return_value=[
-                    MagicMock(choices=[MagicMock(delta=MagicMock(content="Similar compounds found:"))])
-                ]
-            )
-            
-            mock_create.side_effect = [mock_orchestrator_response, mock_synthesis_response]
-            
-            with patch('app.main.chemical_agent.run', new_callable=AsyncMock) as mock_chem:
-                mock_chem.return_value = "Compound similarity results..."
-                response = client.post("/orchestrate", json=payload)
-        
-        assert response.status_code == 200
-        assert "Similar compounds" in response.text or response.text != ""
-    
-    def test_orchestrate_endpoint_with_medical_intent(self, client):
-        """Verify /orchestrate handles biomedical mechanism intent."""
-        payload = {
-            "session_id": "test_session_medical",
-            "user_id": "test_user_789",
-            "text_input": "Explain the mechanism of action for metformin"
-        }
-        
-        with patch('app.main.client.chat.completions.create') as mock_create:
-            # Mock orchestrator response for medical intent
-            mock_orchestrator_response = AsyncMock()
-            mock_orchestrator_response.choices = [
-                MagicMock(message=MagicMock(content=json.dumps({
-                    "intent": "BIOMEDICAL_MECHANISM",
-                    "target_agent": "MEDICAL_AGENT",
-                    "entities": {"compound": "metformin"}
-                })))
-            ]
-            
-            # Mock synthesis response
-            mock_synthesis_response = AsyncMock()
-            mock_synthesis_response.__aiter__ = MagicMock(
-                return_value=[
-                    MagicMock(choices=[MagicMock(delta=MagicMock(content="Metformin works by"))])
-                ]
-            )
-            
-            mock_create.side_effect = [mock_orchestrator_response, mock_synthesis_response]
-            
-            with patch('app.main.medical_agent.run', new_callable=AsyncMock) as mock_med:
-                mock_med.return_value = "Mechanism of action details..."
-                response = client.post("/orchestrate", json=payload)
-        
-        assert response.status_code == 200
-    
-    def test_orchestrate_endpoint_missing_required_fields(self, client):
-        """Verify that missing required fields are handled properly."""
-        payload = {
-            "session_id": "test_session",
-            # Missing user_id and text_input
-        }
-        
-        response = client.post("/orchestrate", json=payload)
-        # Should return 422 Unprocessable Entity for validation error
-        assert response.status_code == 422
-    
-    def test_orchestrate_endpoint_session_isolation(self, client):
-        """Verify that different sessions maintain isolated chat history."""
-        payload_session1 = {
-            "session_id": "session_1",
-            "user_id": "user_1",
-            "text_input": "Hello from session 1"
-        }
-        
-        payload_session2 = {
-            "session_id": "session_2",
-            "user_id": "user_2",
-            "text_input": "Hello from session 2"
-        }
-        
-        with patch('app.main.client.chat.completions.create') as mock_create:
-            mock_orchestrator_response = AsyncMock()
-            mock_orchestrator_response.choices = [
-                MagicMock(message=MagicMock(content=json.dumps({
-                    "intent": "APP_HELP",
-                    "target_agent": "APP_AGENT",
-                    "entities": {}
-                })))
-            ]
-            
-            mock_synthesis_response = AsyncMock()
-            mock_synthesis_response.__aiter__ = MagicMock(
-                return_value=[MagicMock(choices=[MagicMock(delta=MagicMock(content="Response"))])]
-            )
-            
-            mock_create.side_effect = [mock_orchestrator_response, mock_synthesis_response]
-            client.post("/orchestrate", json=payload_session1)
-            
-            # Reset mock for second call
-            mock_create.side_effect = [mock_orchestrator_response, mock_synthesis_response]
-            client.post("/orchestrate", json=payload_session2)
-            
-            # Verify both calls were made (sessions are isolated)
-            assert mock_create.call_count >= 2
+        assert "EGFR inhibitor result." in response.text
 
 
-class TestOrchestrationLogic:
-    """Test suite for the core orchestration logic."""
-    
-    def test_orchestrator_system_prompt_exists(self):
-        """Verify that the orchestrator system prompt is defined."""
+class TestRAGEndpoints:
+    """Test suite for RAG status and job polling endpoints."""
+
+    def test_rag_status_endpoint(self, client):
+        """Verify that /api/v1/rag/status returns engine information."""
+        with patch("app.core.deps.rag_agent.status", new_callable=AsyncMock) as mock_status:
+            mock_status.return_value = {
+                "weaviate_connected": False,
+                "index_name": "AilixirDocs",
+                "node_count": 0,
+                "engine_ready": True,
+                "embed_model": "huggingface/intfloat/multilingual-e5-large-instruct",
+                "llm_model": "groq/openai/gpt-oss-120b",
+                "search_mode": "hybrid (α=0.5)",
+                "top_k": 5,
+            }
+            response = client.get("/api/v1/rag/status")
+
+        assert response.status_code == 200
+        assert response.json()["index_name"] == "AilixirDocs"
+
+    def test_rag_job_status_unknown_job(self, client):
+        """Verify that polling a non-existent job ID returns unknown status."""
+        response = client.get("/api/v1/rag/ingest/status/non-existent-uuid-999")
+        assert response.status_code == 200
+        data = response.json()
+        assert data.get("status") in ["unknown", "not_found"] or "not found" in data.get("message", "").lower()
+
+
+class TestMonitoringEndpoints:
+    """Test suite for metrics and monitoring endpoints."""
+
+    def test_metrics_snapshot_endpoint(self, client):
+        """Verify that /api/v1/metrics returns metrics snapshot."""
+        response = client.get("/api/v1/metrics")
+        assert response.status_code == 200
+        data = response.json()
+        assert "requests" in data
+        assert "uptime" in data
+
+    def test_metrics_requests_endpoint(self, client):
+        """Verify that /api/v1/metrics/requests returns request history list."""
+        response = client.get("/api/v1/metrics/requests")
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+
+class TestMemoryUnits:
+    """Test suite for ShortTermMemory and LongTermMemory."""
+
+    def test_short_term_memory_sliding_window(self):
+        """Verify that ShortTermMemory preserves messages and limits length."""
+        mem = ShortTermMemory(maxlen=3)
+        session_id = "test_window_session"
+
+        mem.add_message(session_id, "user", "Message 1")
+        mem.add_message(session_id, "assistant", "Message 2")
+        mem.add_message(session_id, "user", "Message 3")
+        mem.add_message(session_id, "assistant", "Message 4")
+
+        history = mem.get_history(session_id)
+        assert len(history) == 3
+        assert history[0]["content"] == "Message 2"
+        assert history[-1]["content"] == "Message 4"
+
+        mem.clear(session_id)
+        assert len(mem.get_history(session_id)) == 0
+
+    def test_long_term_memory_json_fallback_and_search(self, tmp_path):
+        """Verify that LongTermMemory adds entries and searches correctly."""
+        store_path = str(tmp_path / "test_ltm.json")
+        ltm = LongTermMemory(path=store_path, host="invalid-unreachable-redis-host", port=9999)
+
+        assert ltm.is_redis is False
+        ltm.add_entry("sess_1", "User asked about aspirin ADMET profile", {"compound": "aspirin"})
+        ltm.add_entry("sess_2", "User asked about EGFR pathway inhibition", {"compound": "gefitinib"})
+
+        results = ltm.search("aspirin")
+        assert len(results) >= 1
+        assert "aspirin" in results[0]["text"]
+
+
+class TestChemicalAgentUnits:
+    """Test suite for ChemicalAgent helper functions and safe formatting."""
+
+    def test_fmt_helper_safely_handles_types(self):
+        """Verify that _fmt helper safely converts numbers and handles None without raising TypeError."""
+        assert _fmt(0.123456, 4) == "0.1235"
+        assert _fmt(12.5, 2) == "12.50"
+        assert _fmt(None) == "N/A"
+        assert _fmt("custom_string") == "custom_string"
+
+    def test_prompts_defined(self):
+        """Verify that key prompts are properly defined in prompts.py."""
         assert ORCHESTRATOR_SYSTEM_PROMPT is not None
-        assert "Orchestrator" in ORCHESTRATOR_SYSTEM_PROMPT
-        assert "CHEMICAL_AGENT" in ORCHESTRATOR_SYSTEM_PROMPT
-        assert "MEDICAL_AGENT" in ORCHESTRATOR_SYSTEM_PROMPT
-    
-    def test_orchestrator_system_prompt_contains_intents(self):
-        """Verify that the system prompt includes all required intents."""
-        required_intents = [
-            "CHEMICAL_SIMILARITY",
-            "ADMET_ANALYSIS",
-            "DRUG_REPURPOSING",
-            "BIOMEDICAL_MECHANISM",
-            "APP_HELP"
-        ]
-        
-        for intent in required_intents:
-            assert intent in ORCHESTRATOR_SYSTEM_PROMPT
-
-
-class TestErrorHandling:
-    """Test suite for error handling scenarios."""
-    
-    def test_orchestrate_handles_json_parse_error(self, client):
-        """Verify that JSON parsing errors are handled gracefully."""
-        payload = {
-            "session_id": "error_test",
-            "user_id": "test_user",
-            "text_input": "Test query"
-        }
-        
-        with patch('app.main.client.chat.completions.create') as mock_create:
-            # Mock a response that can't be parsed as valid JSON
-            mock_orchestrator_response = AsyncMock()
-            mock_orchestrator_response.choices = [
-                MagicMock(message=MagicMock(content="Invalid JSON {malformed"))
-            ]
-            
-            mock_create.side_effect = mock_orchestrator_response
-            
-            response = client.post("/orchestrate", json=payload)
-            
-            # Should return 500 error
-            assert response.status_code == 500
-            assert "Error" in response.json()["detail"] or "error" in response.json()["detail"].lower()
-    
-    def test_orchestrate_clears_memory_on_crash(self, client):
-        """Verify that session memory is cleared when a crash occurs."""
-        from app.main import SESSION_MEMORY
-        
-        initial_count = len(SESSION_MEMORY)
-        
-        payload = {
-            "session_id": "crash_test",
-            "user_id": "test_user",
-            "text_input": "Test query"
-        }
-        
-        # Populate memory with initial state
-        SESSION_MEMORY["crash_test"] = [{"role": "user", "content": "Hello"}]
-        
-        with patch('app.main.client.chat.completions.create') as mock_create:
-            mock_create.side_effect = Exception("Simulated LLM API failure")
-            
-            response = client.post("/orchestrate", json=payload)
-            
-            # Memory should be cleared after the error
-            assert len(SESSION_MEMORY.get("crash_test", [])) == 0
-            assert response.status_code == 500
+        assert COMBINED_ORCHESTRATOR_PROMPT is not None
+        assert "CHEMICAL_AGENT" in COMBINED_ORCHESTRATOR_PROMPT
+        assert "MEDICAL_AGENT" in COMBINED_ORCHESTRATOR_PROMPT

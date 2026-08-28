@@ -54,8 +54,10 @@ _token_usage: Dict[str, Dict[str, float]] = defaultdict(lambda: {
 
 # Model pricing per 1M tokens (Groq rates / default estimates)
 MODEL_PRICING = {
-    "llama-3.3-70b-versatile": {"prompt": 0.59, "completion": 0.79},
-    "whisper-large-v3-turbo":  {"prompt": 0.04, "completion": 0.04},
+    "openai/gpt-oss-20b":      {"prompt": 0.075, "completion": 0.30},
+    "openai/gpt-oss-120b":     {"prompt": 0.15,  "completion": 0.60},
+    "llama-3.3-70b-versatile": {"prompt": 0.59,  "completion": 0.79},
+    "whisper-large-v3-turbo":  {"prompt": 0.04,  "completion": 0.04},
     "canopylabs/orpheus-arabic-saudi": {"prompt": 0.50, "completion": 0.50},
     "canopylabs/orpheus-v1-english": {"prompt": 0.50, "completion": 0.50},
 }

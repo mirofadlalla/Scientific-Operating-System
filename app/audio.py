@@ -119,12 +119,12 @@ class AudioProcessor:
 
 
     # ──────────────────────────────────────────────────────────────────────────
-    # TTS  —  OpenAI (high-quality) with graceful degradation
+    # TTS  —  Groq Orpheus with OpenAI fallback and browser Web Speech fallback
     # ──────────────────────────────────────────────────────────────────────────
 
     async def synthesize_speech(self, text: str, voice: str = "auto") -> bytes:
         """
-        Text-to-Speech using Groq API with Orpheus models.
+        Text-to-Speech using Groq API with Orpheus models (with OpenAI TTS fallback).
         Auto-detects language or defaults based on text content.
 
         Args:
@@ -146,7 +146,6 @@ class AudioProcessor:
                 response_format="wav",
                 input=text,
             )
-            # Response in OpenAI/Groq SDK supports response.content or streaming/bytes
             if hasattr(response, "content"):
                 audio_bytes = response.content
             elif hasattr(response, "read"):
@@ -158,7 +157,23 @@ class AudioProcessor:
             return audio_bytes
 
         except Exception as exc:
-            print(f"[TTS FAIL] Groq TTS error: {repr(exc)}")
+            print(f"[TTS INFO] Groq TTS unavailable ({exc}) — trying OpenAI TTS if configured…")
+            if self.openai_client:
+                try:
+                    oa_voice = "nova" if voice == "auto" else voice
+                    oa_response = await self.openai_client.audio.speech.create(
+                        model="tts-1",
+                        voice=oa_voice,
+                        response_format="mp3",
+                        input=text,
+                    )
+                    if hasattr(oa_response, "content"):
+                        return oa_response.content
+                    elif hasattr(oa_response, "read"):
+                        return await oa_response.read()
+                    return oa_response
+                except Exception as oa_err:
+                    print(f"[TTS FAIL] OpenAI fallback error: {oa_err}")
             raise ValueError(f"Speech synthesis failed: {exc}") from exc
 
     # ──────────────────────────────────────────────────────────────────────────

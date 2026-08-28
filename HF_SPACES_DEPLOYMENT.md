@@ -189,7 +189,7 @@ def update_job_status(job_id, status, message, extra):
 ### LLM & Embeddings
 
 Both use **Groq's API** (external service):
-- LLM: `llama-3.3-70b-versatile`
+- LLM: `openai/gpt-oss-120b` (Reasoning) & `openai/gpt-oss-20b` (Routing)
 - Embeddings: `text-embedding-3-small`
 
 Requires `GROQ_API_KEY` environment variable.

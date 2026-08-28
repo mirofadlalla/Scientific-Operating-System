@@ -23,8 +23,5 @@ long_memory = None  # type: Optional[Any]  # LongTermMemory instance
 # ── In-process RAG ingestion job tracker ─────────────────────────────────────
 ingestion_jobs: Dict[str, Dict[str, Any]] = {}
 
-# ── Per-session conversation buffer (non-Redis fallback) ─────────────────────
-SESSION_MEMORY: Dict[str, List[Dict[str, str]]] = {}
-
 # ── Active WebSocket voice sessions ──────────────────────────────────────────
 active_voice_sessions: Dict[str, Any] = {}

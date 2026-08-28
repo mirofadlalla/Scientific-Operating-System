@@ -6,6 +6,7 @@ POST /api/v1/audio/synthesize   — Text-to-Speech (OpenAI TTS)
 POST /api/v1/audio/agent-voice  — Full voice-to-voice pipeline (STT → Agent → TTS)
 """
 import logging
+import urllib.parse
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -100,7 +101,7 @@ async def agent_voice_interaction(
             media_type="audio/wav",
             headers={
                 "Content-Disposition": "attachment; filename=agent_response.wav",
-                "X-Agent-Text": full_response[:200],
+                "X-Agent-Text": urllib.parse.quote(full_response[:200]),
             },
         )
 

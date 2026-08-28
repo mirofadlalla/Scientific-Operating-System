@@ -8,7 +8,7 @@ try:
     from app.config import settings as app_settings
     GROQ_API_KEY       = app_settings.GROQ_API_KEY
     GROQ_BASE_URL      = app_settings.GROQ_BASE_URL
-    ORCHESTRATOR_MODEL = app_settings.ORCHESTRATOR_MODEL
+    ORCHESTRATOR_MODEL = getattr(app_settings, "REASONING_MODEL", app_settings.ORCHESTRATOR_MODEL)
     WEAVIATE_HOST      = getattr(app_settings, "WEAVIATE_HOST", "localhost")
     WEAVIATE_PORT      = getattr(app_settings, "WEAVIATE_PORT", 8080)
     WEAVIATE_GRPC_PORT = getattr(app_settings, "WEAVIATE_GRPC_PORT", 50051)
@@ -22,7 +22,7 @@ except ImportError:
     class _StandaloneSettings(BaseSettings):
         GROQ_API_KEY:       str = os.getenv("GROQ_API_KEY", "")
         GROQ_BASE_URL:      str = "https://api.groq.com/openai/v1"
-        ORCHESTRATOR_MODEL: str = "llama-3.3-70b-versatile"
+        ORCHESTRATOR_MODEL: str = os.getenv("REASONING_MODEL", "openai/gpt-oss-120b")
         WEAVIATE_HOST:      str = os.getenv("WEAVIATE_HOST", "localhost")
         WEAVIATE_PORT:      int = int(os.getenv("WEAVIATE_PORT", "8080"))
         WEAVIATE_GRPC_PORT: int = int(os.getenv("WEAVIATE_GRPC_PORT", "50051"))

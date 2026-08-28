@@ -9,7 +9,7 @@ class MedicalAgent:
             base_url=settings.GROQ_BASE_URL,
             api_key=settings.GROQ_API_KEY
         )
-        self.model_name = settings.ORCHESTRATOR_MODEL  # llama-3.3-70b-versatile
+        self.model_name = getattr(settings, "REASONING_MODEL", settings.ORCHESTRATOR_MODEL)  # openai/gpt-oss-120b
 
     async def run(self, intent: str, entities: dict) -> str:
         compound = entities.get("compound", "")

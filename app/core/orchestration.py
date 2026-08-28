@@ -159,7 +159,7 @@ async def split_composite_question(text: str) -> list[str]:
     """
     try:
         response = await client.chat.completions.create(
-            model=settings.ORCHESTRATOR_MODEL,
+            model=settings.ROUTING_MODEL,
             messages=[
                 {"role": "system", "content": COMPOSITE_DETECTION_PROMPT},
                 {"role": "user",   "content": text},
@@ -226,7 +226,7 @@ async def route_and_stream(
         token_count = 0
 
         stream = await client.chat.completions.create(
-            model=settings.ORCHESTRATOR_MODEL,
+            model=settings.ROUTING_MODEL,
             messages=messages,
             temperature=0.7,
             stream=True,
@@ -247,7 +247,7 @@ async def route_and_stream(
 
         monitoring.record_agent_call("APP_AGENT", "APP_HELP", 0, success=True)
         monitoring.record_tokens(
-            model=settings.ORCHESTRATOR_MODEL,
+            model=settings.ROUTING_MODEL,
             prompt_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
             completion_tokens=len(full_reply) // 4,
             ttft_ms=ttft_ms,
@@ -303,8 +303,6 @@ async def route_and_stream(
             if store_memory:
                 short_memory.add_message(session_id, "user", text_input)
                 short_memory.add_message(session_id, "assistant", combined_answer)
-                state.SESSION_MEMORY.setdefault(session_id, []).append({"role": "user",      "content": text_input})
-                state.SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": combined_answer})
                 if state.long_memory is not None:
                     try:
                         state.long_memory.add_entry(
@@ -330,7 +328,7 @@ async def route_and_stream(
 
     try:
         response = await client.chat.completions.create(
-            model=settings.ORCHESTRATOR_MODEL,
+            model=settings.ROUTING_MODEL,
             messages=messages,
             response_format={"type": "json_object"},
             temperature=0.0,
@@ -445,8 +443,6 @@ async def route_and_stream(
         if store_memory:
             short_memory.add_message(session_id, "user", text_input)
             short_memory.add_message(session_id, "assistant", rag_output)
-            state.SESSION_MEMORY.setdefault(session_id, []).append({"role": "user",      "content": text_input})
-            state.SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": rag_output})
             if state.long_memory is not None:
                 try:
                     state.long_memory.add_entry(
@@ -496,7 +492,7 @@ async def route_and_stream(
     token_count = 0
 
     stream = await client.chat.completions.create(
-        model=settings.ORCHESTRATOR_MODEL,
+        model=settings.REASONING_MODEL,
         messages=messages,
         temperature=0.3,
         stream=True,
@@ -524,7 +520,7 @@ async def route_and_stream(
         success=True,
     )
     monitoring.record_tokens(
-        model=settings.ORCHESTRATOR_MODEL,
+        model=settings.REASONING_MODEL,
         prompt_tokens=sum(len(m.get("content", "")) for m in messages) // 4,
         completion_tokens=len(full_reply) // 4,
         ttft_ms=ttft_ms,
@@ -534,8 +530,6 @@ async def route_and_stream(
     if store_memory:
         short_memory.add_message(session_id, "user", text_input)
         short_memory.add_message(session_id, "assistant", full_reply)
-        state.SESSION_MEMORY.setdefault(session_id, []).append({"role": "user",      "content": text_input})
-        state.SESSION_MEMORY.setdefault(session_id, []).append({"role": "assistant", "content": full_reply})
         if state.long_memory is not None:
             try:
                 state.long_memory.add_entry(

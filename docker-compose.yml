@@ -77,9 +77,9 @@ services:
       weaviate:
         condition: service_healthy
     
-    volumes:
-      # Optional: Mount source code for development mode
-      # - .:/code
+    # volumes:
+    #   # Optional: Mount source code for development mode
+    #   # - .:/code
     
     networks:
       - scientific-os-network

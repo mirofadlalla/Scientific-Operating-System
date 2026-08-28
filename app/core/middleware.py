@@ -35,6 +35,7 @@ class ReadinessMiddleware(BaseHTTPMiddleware):
         "/api/v1/rag/status",
         "/api/v1/metrics",
         "/api/v1/metrics/requests",
+        "/api/v1/orchestrate",
         # Voice WebSocket must ALWAYS pass through
         "/api/v1/ws/voice",
     }
@@ -48,7 +49,13 @@ class ReadinessMiddleware(BaseHTTPMiddleware):
         if request.scope.get("type") == "websocket":
             return await call_next(request)
 
-        if path in self._ALWAYS_ALLOW or path.startswith("/api/v1/rag/ingest/status"):
+        if (
+            path in self._ALWAYS_ALLOW
+            or path.startswith("/api/v1/auth")
+            or path.startswith("/api/v1/audio")
+            or path.startswith("/api/v1/metrics")
+            or path.startswith("/api/v1/rag/ingest/status")
+        ):
             return await call_next(request)
 
         if not rag_state["ready"]:

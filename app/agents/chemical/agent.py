@@ -1,6 +1,13 @@
 import httpx
 from app.config import settings
 
+def _fmt(val, decimals=4) -> str:
+    """Format numeric values safely without raising TypeError on None."""
+    if isinstance(val, (int, float)):
+        return f"{val:.{decimals}f}"
+    return str(val) if val is not None else "N/A"
+
+
 class ChemicalAgent:
     def __init__(self):
         self.headers = {"accept": "application/json", "Content-Type": "application/json"}
@@ -31,13 +38,13 @@ class ChemicalAgent:
                         pred = res.get("predictions", {})
                         
                         return (
-                            f"[ADMET Analysis for {res.get('smiles')}]:\n"
-                            f"• Absorption: {pred.get('Absorption'):.4f}\n"
-                            f"• Distribution: {pred.get('Distribution'):.4f}\n"
-                            f"• Metabolism: {pred.get('Metabolism'):.4f}\n"
-                            f"• Excretion: {pred.get('Excretion'):.4f}\n"
-                            f"• Toxicity: {pred.get('Toxicity'):.4f}\n"
-                            f"Processing Time: {data.get('processing_time_ms'):.2f}ms"
+                            f"[ADMET Analysis for {res.get('smiles', smiles)}]:\n"
+                            f"• Absorption: {_fmt(pred.get('Absorption'))}\n"
+                            f"• Distribution: {_fmt(pred.get('Distribution'))}\n"
+                            f"• Metabolism: {_fmt(pred.get('Metabolism'))}\n"
+                            f"• Excretion: {_fmt(pred.get('Excretion'))}\n"
+                            f"• Toxicity: {_fmt(pred.get('Toxicity'))}\n"
+                            f"Processing Time: {_fmt(data.get('processing_time_ms'), 2)}ms"
                         )
                     return f"[Chemical Agent Error] Failed to connect to ADMET Space. Status code: {response.status_code}"
 
@@ -61,9 +68,9 @@ class ChemicalAgent:
                         candidates = data.get("top_candidates", [])
                         
                         # Compress screening results into a concise, token-saving single-line text block
-                        report = f"Screening '{data.get('disease_name')}': "
+                        report = f"Screening '{data.get('disease_name', target_disease)}': "
                         for idx, cand in enumerate(candidates[:3], 1): # Process top 3 candidates only
-                            report += f"[{idx}] {cand.get('drug_name')}->{cand.get('target_symbol')} (Score: {cand.get('binding_score'):.2f}). "
+                            report += f"[{idx}] {cand.get('drug_name', 'Unknown')}->{cand.get('target_symbol', 'Unknown')} (Score: {_fmt(cand.get('binding_score'), 2)}). "
                         return report
                         
                     return f"[Chemical Agent Error] Failed to connect to Drug Repurposing Space. Status code: {response.status_code}"
@@ -72,7 +79,7 @@ class ChemicalAgent:
                 else:
                     if not smiles:
                         return "[Chemical Agent] Error: Please provide a valid SMILES string to execute similarity search queries."
-                        
+                    
                     endpoint = "/search/full-rag" if "explain" in intent or "detailed" in intent else "/search/retrieval-only"
                     url = f"{settings.CHEMICAL_AI_URL.rstrip('/')}{endpoint}"
                     payload = {"smiles": smiles, "top_k": 3, "explain": True}
@@ -83,9 +90,9 @@ class ChemicalAgent:
                         results = data.get("results", [])
                         
                         # Strip raw image URLs, redundant structural metadata, and CIDs to optimize tokens
-                        report = f"Query '{data.get('query_smiles')}': "
+                        report = f"Query '{data.get('query_smiles', smiles)}': "
                         for idx, res in enumerate(results[:3], 1): # Process top 3 structurally similar compounds only
-                            report += f"[{idx}] {res.get('name')} (Sim: {res.get('similarity_score'):.2f}). "
+                            report += f"[{idx}] {res.get('name', 'Compound')} (Sim: {_fmt(res.get('similarity_score'), 2)}). "
                             if res.get("explanation"):
                                 report += f"Note: {res.get('explanation')} "
                         return report
