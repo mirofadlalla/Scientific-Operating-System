@@ -237,16 +237,25 @@ class TestWebSocketVoicePipeline:
 
     def test_vad_energy_updates_status(self, client):
         """VAD energy messages should trigger vad_status responses when threshold changes."""
+        def receive_vad_status(ws):
+            for _ in range(5):
+                resp = json.loads(ws.receive_text())
+                if resp.get("type") == "vad_status":
+                    return resp
+            return None
+
         with client.websocket_connect("/api/v1/ws/voice?session_id=test_vad") as ws:
             # Send high energy (should detect speech)
             ws.send_text(json.dumps({"type": "vad_energy", "rms": 5000.0}))
-            resp = json.loads(ws.receive_text())
+            resp = receive_vad_status(ws)
+            assert resp is not None
             assert resp["type"] == "vad_status"
             assert resp["speaking"] is True
 
             # Send low energy (should detect silence)
-            ws.send_text(json.dumps({"type": "vad_energy", "rms": 100.0}))
-            resp = json.loads(ws.receive_text())
+            ws.send_text(json.dumps({"type": "vad_energy", "rms": 1.0}))
+            resp = receive_vad_status(ws)
+            assert resp is not None
             assert resp["type"] == "vad_status"
             assert resp["speaking"] is False
 

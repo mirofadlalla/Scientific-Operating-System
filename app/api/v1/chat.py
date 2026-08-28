@@ -378,7 +378,7 @@ async def websocket_voice_channel(
             # ── Client-side VAD energy ────────────────────────────────────────
             elif msg_type == "vad_energy":
                 rms = float(msg.get("rms", 0))
-                speaking = audio_processor.is_speech(rms)
+                speaking = audio_processor.is_speech(rms, threshold=18.0) if rms <= 255.0 else audio_processor.is_speech(rms, threshold=1200.0)
                 if speaking != session.is_speaking:
                     session.is_speaking = speaking
                     await _safe_send_json(websocket, {

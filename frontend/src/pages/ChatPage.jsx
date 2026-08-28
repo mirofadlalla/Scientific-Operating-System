@@ -16,7 +16,6 @@ let currentAudio = null;
 
 // ── MIME type / format helpers ───────────────────────────────────────────────
 // Pick the best audio format the browser's MediaRecorder actually supports.
-// The format string is passed to the backend so Whisper gets the right extension.
 const PREFERRED_MIME_TYPES = [
   { mime: 'audio/webm;codecs=opus', ext: 'webm' },
   { mime: 'audio/webm',             ext: 'webm' },
@@ -31,7 +30,6 @@ function pickRecorderFormat() {
       return { mime, ext };
     }
   }
-  // Browser will decide on its own; assume webm as a last resort
   return { mime: '', ext: 'webm' };
 }
 
@@ -60,7 +58,6 @@ async function playGroqAudio(text, soundEnabledRef) {
   } catch (err) {
     console.warn('Backend TTS request error, falling back to Web Speech API:', err);
   }
-  // Fallback to browser SpeechSynthesis if backend TTS call fails
   if (window.speechSynthesis) {
     const utt = new SpeechSynthesisUtterance(text.slice(0, 800));
     utt.rate = 1.0;
@@ -116,7 +113,7 @@ function VoiceOverlay({ active, speaking, processing, transcript, status, onStop
         {transcript || 'Speak now…'}
       </div>
       <div className="live-status">{status}</div>
-      <button className="overlay-stop-btn" onClick={onStop}>■ Stop</button>
+      <button className="overlay-stop-btn" onClick={onStop}>■ Stop Voice</button>
     </div>
   );
 }
@@ -130,9 +127,7 @@ export default function ChatPage() {
   const [sending, setSending]         = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const soundEnabledRef = useRef(true);
-  const [ttsActive, setTtsActive]     = useState(false);
 
-  // Keep ref in sync with state so closures always read the latest value
   const setSoundEnabledSync = (val) => {
     soundEnabledRef.current = val;
     setSoundEnabled(val);
@@ -145,23 +140,31 @@ export default function ChatPage() {
 
   // Voice overlay state
   const [voiceActive, setVoiceActive]       = useState(false);
+  const voiceActiveRef                      = useRef(false);
   const [voiceSpeaking, setVoiceSpeaking]   = useState(false);
   const [voiceProcessing, setVoiceProcessing] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceStatus, setVoiceStatus]       = useState('');
   const [waveHeights, setWaveHeights]       = useState(Array(12).fill(4));
 
-  // Audio refs
-  const mediaRecorderRef  = useRef(null);
-  const audioContextRef   = useRef(null);
-  const analyserRef       = useRef(null);
-  const waveRafRef        = useRef(null);
-  const aiStreamingRef    = useRef(false);
-  const interruptedRef    = useRef(false);
+  // Audio & VAD refs
+  const mediaRecorderRef   = useRef(null);
+  const audioContextRef    = useRef(null);
+  const analyserRef        = useRef(null);
+  const waveRafRef         = useRef(null);
+  const micStreamRef       = useRef(null);
+  const aiStreamingRef     = useRef(false);
+
+  // VAD Auto-endpointing refs
+  const speechDetectedRef  = useRef(false);
+  const speechStartRef     = useRef(null);
+  const silenceStartRef    = useRef(null);
+  const isSpeakingRef      = useRef(false);
+  const autoFinalizingRef  = useRef(false);
 
   // Binary audio accumulation for TTS playback
-  const audioBlobPartsRef = useRef([]);
-  const receivingAudioRef = useRef(false);
+  const audioBlobPartsRef  = useRef([]);
+  const receivingAudioRef  = useRef(false);
 
   const chatEndRef = useRef(null);
   const nextId     = useRef(1);
@@ -177,9 +180,160 @@ export default function ChatPage() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
+  // Keep voiceActiveRef in sync
+  const setVoiceActiveSync = (val) => {
+    voiceActiveRef.current = val;
+    setVoiceActive(val);
+  };
+
+  // ── VAD Finalize Turn (Auto-stop when user finishes speaking) ────────────
+  const finalizeVoiceTurn = useCallback(() => {
+    if (autoFinalizingRef.current) return;
+    autoFinalizingRef.current = true;
+    cancelAnimationFrame(waveRafRef.current);
+
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state !== 'inactive') {
+      const ext = mr._recExt || 'webm';
+      mr.onstop = () => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'audio_end', format: ext }));
+        }
+      };
+      try { mr.stop(); } catch (_) {}
+    } else {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'audio_end', format: 'webm' }));
+      }
+    }
+
+    setVoiceSpeaking(false);
+    setVoiceProcessing(true);
+    setVoiceStatus('Transcribing speech…');
+    setWaveHeights(Array(12).fill(4));
+  }, []);
+
+  // ── Waveform animation & Client-side VAD ─────────────────────────────────
+  const animateWave = useCallback(() => {
+    if (!analyserRef.current || autoFinalizingRef.current) return;
+    const data = new Uint8Array(analyserRef.current.frequencyBinCount);
+    analyserRef.current.getByteFrequencyData(data);
+    const step = Math.floor(data.length / 12);
+    const heights = Array.from({ length: 12 }, (_, i) => {
+      const v = data[i * step] || 0;
+      return Math.max(4, (v / 255) * 36);
+    });
+    setWaveHeights(heights);
+
+    const rms = Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'vad_energy', rms }));
+    }
+
+    // ── VAD Auto-detection Logic ──
+    const SPEECH_THRESHOLD = 18.0;
+    const MIN_SPEECH_MS    = 350;  // Must speak for >350ms to count as real speech
+    const SILENCE_TIMEOUT  = 1200; // 1.2s silence after speech triggers auto-stop
+
+    if (rms > SPEECH_THRESHOLD) {
+      if (speechStartRef.current === null) {
+        speechStartRef.current = Date.now();
+      }
+      if (Date.now() - speechStartRef.current >= MIN_SPEECH_MS) {
+        speechDetectedRef.current = true;
+        if (!isSpeakingRef.current) {
+          isSpeakingRef.current = true;
+          setVoiceSpeaking(true);
+          setVoiceStatus('Listening (speaking)…');
+        }
+      }
+      silenceStartRef.current = null;
+    } else {
+      speechStartRef.current = null;
+      if (isSpeakingRef.current) {
+        isSpeakingRef.current = false;
+        setVoiceSpeaking(false);
+      }
+      // If user has spoken at least once in this turn, check silence duration
+      if (speechDetectedRef.current) {
+        if (silenceStartRef.current === null) {
+          silenceStartRef.current = Date.now();
+        } else if (Date.now() - silenceStartRef.current >= SILENCE_TIMEOUT) {
+          // User finished speaking! Auto-send to server
+          console.log('[VAD] Silence detected after speech. Auto-finalizing turn…');
+          finalizeVoiceTurn();
+          return;
+        }
+      }
+    }
+
+    waveRafRef.current = requestAnimationFrame(animateWave);
+  }, [finalizeVoiceTurn]);
+
+  // ── Start Listening for a Voice Turn ─────────────────────────────────────
+  const startVoiceListening = useCallback(async () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    stopTTS();
+
+    // Reset VAD state for the new utterance
+    speechDetectedRef.current = false;
+    speechStartRef.current    = null;
+    silenceStartRef.current   = null;
+    isSpeakingRef.current     = false;
+    autoFinalizingRef.current = false;
+
+    try {
+      let stream = micStreamRef.current;
+      if (!stream || !stream.active) {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = stream;
+      }
+
+      if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+        audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
+
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      analyserRef.current = audioContextRef.current.createAnalyser();
+      analyserRef.current.fftSize = 256;
+      source.connect(analyserRef.current);
+
+      const { mime: recMime, ext: recExt } = pickRecorderFormat();
+      const mrOptions = recMime ? { mimeType: recMime } : {};
+      const mr = new MediaRecorder(stream, mrOptions);
+      mediaRecorderRef.current = mr;
+      mr._recExt = recExt;
+
+      mr.ondataavailable = (e) => {
+        if (e.data.size === 0 || wsRef.current?.readyState !== WebSocket.OPEN) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const b64 = reader.result.split(',')[1];
+          wsRef.current.send(JSON.stringify({ type: 'audio_chunk', data: b64, format: recExt }));
+        };
+        reader.readAsDataURL(e.data);
+      };
+
+      mr.start(250);
+      setVoiceActiveSync(true);
+      setVoiceProcessing(false);
+      setVoiceStatus('Listening… (speak now)');
+      audioBlobPartsRef.current = [];
+      receivingAudioRef.current = false;
+
+      cancelAnimationFrame(waveRafRef.current);
+      waveRafRef.current = requestAnimationFrame(animateWave);
+    } catch (err) {
+      console.error('[Mic Error]', err);
+      addMsg('ai', `⚠️ Microphone error: ${err.message}`, 'error');
+    }
+  }, [animateWave]);
+
   // ── WebSocket setup ─────────────────────────────────────────────────────
   const connectWS = useCallback(() => {
-    // Clear any pending reconnect timer
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
@@ -189,7 +343,6 @@ export default function ChatPage() {
     }
 
     const ws = new WebSocket(`${WS_URL}?session_id=${SESSION_ID}`);
-    // IMPORTANT: set binaryType so binary frames arrive as ArrayBuffer
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
@@ -200,7 +353,6 @@ export default function ChatPage() {
     ws.onclose = () => {
       console.log('[WS] Disconnected, will reconnect in 3s');
       setWsConnected(false);
-      // Only reconnect if this is still the active socket
       reconnectTimerRef.current = setTimeout(connectWS, 3000);
     };
     ws.onerror = () => setWsConnected(false);
@@ -230,7 +382,6 @@ export default function ChatPage() {
         setVoiceProcessing(true);
         if (msg.final) addMsg('user', msg.text);
       } else if (msg.type === 'ai_start') {
-        // AI response is beginning — reset audio accumulator
         audioBlobPartsRef.current = [];
         receivingAudioRef.current = false;
         aiStreamingRef.current = true;
@@ -248,7 +399,7 @@ export default function ChatPage() {
       } else if (msg.type === 'ai_done') {
         aiStreamingRef.current = false;
         setVoiceProcessing(false);
-        setVoiceStatus('Ready');
+        setVoiceStatus('Speaking…');
         setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m));
 
         // Play accumulated binary TTS audio
@@ -258,39 +409,54 @@ export default function ChatPage() {
             const blob = new Blob(audioBlobPartsRef.current, { type: 'audio/wav' });
             const url = URL.createObjectURL(blob);
             currentAudio = new Audio(url);
-            currentAudio.onended = () => URL.revokeObjectURL(url);
+            currentAudio.onended = () => {
+              URL.revokeObjectURL(url);
+              setVoiceStatus('Ready');
+              // Automatically resume listening for continuous hands-free multi-turn conversation!
+              if (voiceActiveRef.current) {
+                startVoiceListening();
+              }
+            };
             currentAudio.play().catch((playErr) => {
               console.warn('WS TTS autoplay blocked:', playErr);
+              setVoiceStatus('Ready');
+              if (voiceActiveRef.current) {
+                startVoiceListening();
+              }
             });
           } catch (err) {
             console.error('WS audio playback error:', err);
+            setVoiceStatus('Ready');
+            if (voiceActiveRef.current) {
+              startVoiceListening();
+            }
+          }
+        } else {
+          setVoiceStatus('Ready');
+          if (voiceActiveRef.current) {
+            startVoiceListening();
           }
         }
         audioBlobPartsRef.current = [];
         receivingAudioRef.current = false;
       } else if (msg.type === 'interrupted') {
-        // Stop any currently playing TTS on interrupt
         stopTTS();
         audioBlobPartsRef.current = [];
         receivingAudioRef.current = false;
         setVoiceProcessing(false);
         setVoiceStatus('Interrupted');
       } else if (msg.type === 'error') {
-        // Backend sent an error (e.g. STT failed, agent crash)
         setVoiceProcessing(false);
         setVoiceStatus('Error');
         addMsg('ai', `⚠️ Voice error: ${msg.message || 'Unknown error'}`, 'error');
         console.error('[WS Error]', msg.message);
-      } else if (msg.type === 'pong') {
-        // Heartbeat response — no action needed
       }
     };
-  }, []);
+  }, [startVoiceListening]);
 
   useEffect(() => {
     connectWS();
     return () => {
-      // Clean up reconnect timer on unmount
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
@@ -301,106 +467,40 @@ export default function ChatPage() {
     };
   }, [connectWS]);
 
-  // ── Client-side keepalive ping ──────────────────────────────────────────
+  // Keepalive ping every 20s
   useEffect(() => {
     const iv = setInterval(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'ping' }));
       }
-    }, 20000); // every 20 seconds
+    }, 20000);
     return () => clearInterval(iv);
   }, []);
 
-  // ── Waveform animation ──────────────────────────────────────────────────
-  const animateWave = () => {
-    if (!analyserRef.current) { waveRafRef.current = requestAnimationFrame(animateWave); return; }
-    const data = new Uint8Array(analyserRef.current.frequencyBinCount);
-    analyserRef.current.getByteFrequencyData(data);
-    const step = Math.floor(data.length / 12);
-    const heights = Array.from({ length: 12 }, (_, i) => {
-      const v = data[i * step] || 0;
-      return Math.max(4, (v / 255) * 36);
-    });
-    setWaveHeights(heights);
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const rms = Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length);
-      wsRef.current.send(JSON.stringify({ type: 'vad_energy', rms }));
-    }
-    waveRafRef.current = requestAnimationFrame(animateWave);
-  };
-
-  // ── Mic / WS voice start ─────────────────────────────────────────────────
-  const startVoice = async () => {
-    if (!wsConnected) { addMsg('ai', '⚠️ Voice channel not connected — please wait or reload.', 'error'); return; }
-    stopTTS();
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioContextRef.current = new AudioContext();
-      const source  = audioContextRef.current.createMediaStreamSource(stream);
-      analyserRef.current = audioContextRef.current.createAnalyser();
-      analyserRef.current.fftSize = 256;
-      source.connect(analyserRef.current);
-
-      const { mime: recMime, ext: recExt } = pickRecorderFormat();
-      const mrOptions = recMime ? { mimeType: recMime } : {};
-      const mr = new MediaRecorder(stream, mrOptions);
-      mediaRecorderRef.current = mr;
-      // Store format so stopVoice can pass the same ext to audio_end
-      mr._recExt = recExt;
-
-      mr.ondataavailable = (e) => {
-        if (e.data.size === 0 || wsRef.current?.readyState !== WebSocket.OPEN) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-          const b64 = reader.result.split(',')[1];
-          wsRef.current.send(JSON.stringify({ type: 'audio_chunk', data: b64, format: recExt }));
-        };
-        reader.readAsDataURL(e.data);
-      };
-
-      // Use 250ms timeslice (reduced from 100ms) to cut chunk count by ~60%
-      mr.start(250);
-      setVoiceActive(true);
-      setVoiceTranscript('');
-      setVoiceStatus('Listening…');
-      // Reset audio accumulator for new turn
-      audioBlobPartsRef.current = [];
-      receivingAudioRef.current = false;
-      waveRafRef.current = requestAnimationFrame(animateWave);
-    } catch (err) {
-      addMsg('ai', `⚠️ Microphone error: ${err.message}`, 'error');
-    }
-  };
-
+  // ── Stop Voice Completely ────────────────────────────────────────────────
   const stopVoice = () => {
+    autoFinalizingRef.current = true;
+    cancelAnimationFrame(waveRafRef.current);
+
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== 'inactive') {
-      const ext = mr._recExt || 'webm';
-      // Wait for onstop so the final ondataavailable chunk is flushed BEFORE audio_end
-      mr.onstop = () => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'audio_end', format: ext }));
-        }
-      };
-      mr.stop();
-      mr.stream?.getTracks().forEach(t => t.stop());
-    } else if (!mr) {
-      // No recorder running — send audio_end immediately if needed
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'audio_end', format: 'webm' }));
-      }
+      try { mr.stop(); } catch (_) {}
     }
-    if (audioContextRef.current) {
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop());
+      micStreamRef.current = null;
+    }
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
     }
-    cancelAnimationFrame(waveRafRef.current);
     mediaRecorderRef.current = null;
-    // Keep voiceActive=true while processing so overlay stays visible
-    // It will be cleared when ai_done arrives
+    setVoiceActiveSync(false);
     setVoiceSpeaking(false);
+    setVoiceProcessing(false);
+    setVoiceStatus('');
     setWaveHeights(Array(12).fill(4));
-    setVoiceActive(false);
+    stopTTS();
   };
 
   // ── Text submit ───────────────────────────────────────────────────────────
@@ -412,7 +512,6 @@ export default function ChatPage() {
     stopTTS();
     addMsg('user', text);
 
-    // Show thought box
     const thinkId = nextId.current++;
     setMessages(prev => [...prev, {
       id: thinkId, role: 'ai_think', text: '', thoughts: [THOUGHTS[0]], variant: ''
@@ -520,7 +619,6 @@ export default function ChatPage() {
                   return msg.text;
                 })()}
 
-                {/* Copy button */}
                 {msg.text && msg.role !== 'sys' && (
                   <button
                     className="copy-btn"
@@ -549,7 +647,7 @@ export default function ChatPage() {
           <button
             className={`icon-btn ${wsConnected ? 'ws-on' : ''}`}
             title="WebSocket voice channel"
-            onClick={voiceActive ? stopVoice : startVoice}
+            onClick={voiceActive ? stopVoice : startVoiceListening}
           >
             {voiceActive ? '⏹' : '🎙'}
           </button>
