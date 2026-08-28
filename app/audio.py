@@ -126,6 +126,20 @@ class AudioProcessor:
                 f"Audio too short ({len(audio_file)} bytes) — please speak for at least 1 second"
             )
 
+        # Ensure WebM / audio containers start at their magic header
+        # (prevents 400 invalid media file if stray cluster bytes were prepended)
+        ebml_pos = audio_file.find(b'\x1aE\xdf\xa3')
+        if ebml_pos > 0:
+            print(f"[STT] Slicing {ebml_pos} stray leading bytes to align WebM EBML header")
+            audio_file = audio_file[ebml_pos:]
+        elif ebml_pos == -1 and audio_format == "webm":
+            riff_pos = audio_file.find(b'RIFF')
+            if riff_pos > 0:
+                audio_file = audio_file[riff_pos:]
+            ogg_pos = audio_file.find(b'OggS')
+            if ogg_pos > 0:
+                audio_file = audio_file[ogg_pos:]
+
         # Auto-detect format from magic bytes; fall back to caller-provided hint
         detected = self._detect_format(audio_file)
         effective_format = detected if detected else audio_format
@@ -139,11 +153,18 @@ class AudioProcessor:
             stt_start = time.time()
             print(f"[STT] Sending {len(audio_file):,} bytes as '{effective_format}' to Whisper…")
 
+            whisper_prompt = (
+                "محادثة علمية باللغة العربية والإنجليزية: أدوية، مركبات كيميائية، أحياء، "
+                "جينات، مسارات بيولوجية، وبحث علمي. "
+                "Scientific queries in Arabic (العربية) and English: drug discovery, chemistry, "
+                "ADMET, biology, medicine, SMILES, molecular research."
+            )
+
             transcript = await self.groq_client.audio.transcriptions.create(
                 model=settings.GROQ_WHISPER_MODEL,
                 file=audio_stream,
                 response_format="text",
-                prompt="Scientific query in English or Arabic (العربية). Chemistry, biology, compound, SMILES, medicine, research.",
+                prompt=whisper_prompt,
             )
 
             # Groq returns plain text when response_format="text"

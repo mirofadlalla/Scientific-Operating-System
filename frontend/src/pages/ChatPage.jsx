@@ -180,6 +180,9 @@ export default function ChatPage() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
+  // Turn sequence counter to prevent cross-turn chunk contamination
+  const turnSeqRef         = useRef(0);
+
   // Keep voiceActiveRef in sync
   const setVoiceActiveSync = (val) => {
     voiceActiveRef.current = val;
@@ -193,17 +196,18 @@ export default function ChatPage() {
     cancelAnimationFrame(waveRafRef.current);
 
     const mr = mediaRecorderRef.current;
+    const currentTurn = turnSeqRef.current;
     if (mr && mr.state !== 'inactive') {
       const ext = mr._recExt || 'webm';
       mr.onstop = () => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'audio_end', format: ext }));
+          wsRef.current.send(JSON.stringify({ type: 'audio_end', turn: currentTurn, format: ext }));
         }
       };
       try { mr.stop(); } catch (_) {}
     } else {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'audio_end', format: 'webm' }));
+        wsRef.current.send(JSON.stringify({ type: 'audio_end', turn: currentTurn, format: 'webm' }));
       }
     }
 
@@ -275,6 +279,10 @@ export default function ChatPage() {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     stopTTS();
 
+    // Increment turn sequence for the new utterance
+    turnSeqRef.current += 1;
+    const currentTurn = turnSeqRef.current;
+
     // Reset VAD state for the new utterance
     speechDetectedRef.current = false;
     speechStartRef.current    = null;
@@ -309,10 +317,17 @@ export default function ChatPage() {
 
       mr.ondataavailable = (e) => {
         if (e.data.size === 0 || wsRef.current?.readyState !== WebSocket.OPEN) return;
+        if (autoFinalizingRef.current && mr.state === 'inactive') return;
         const reader = new FileReader();
         reader.onload = () => {
+          if (autoFinalizingRef.current && mr.state === 'inactive') return;
           const b64 = reader.result.split(',')[1];
-          wsRef.current.send(JSON.stringify({ type: 'audio_chunk', data: b64, format: recExt }));
+          wsRef.current.send(JSON.stringify({
+            type: 'audio_chunk',
+            data: b64,
+            turn: currentTurn,
+            format: recExt
+          }));
         };
         reader.readAsDataURL(e.data);
       };
