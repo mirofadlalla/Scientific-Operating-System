@@ -223,7 +223,7 @@ async def _process_voice_turn(session: VoiceSession, audio_format: str):
 
     # ── LLM streaming ────────────────────────────────────────────────────
     await _safe_send_json(ws, {"type": "thought", "text": "Generating answer…"}, session)
-await _safe_send_json(ws, {"type": "ai_start"}, session)
+    await _safe_send_json(ws, {"type": "ai_start"}, session)
 
 
     session.ai_streaming = True

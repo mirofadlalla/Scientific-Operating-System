@@ -297,9 +297,9 @@ export default function ChatPage() {
 
     // ── Mode A: User's turn to speak (recording active) ──
     if (recordingActiveRef.current) {
-      const SPEECH_THRESHOLD = 18.0;
-      const MIN_SPEECH_MS    = 350;  // Must speak for >350ms to count as real speech
-      const SILENCE_TIMEOUT  = 1200; // 1.2s silence after speech triggers auto-stop
+      const SPEECH_THRESHOLD = 28.0;  // Raised from 18 — rejects ambient noise on phones
+      const MIN_SPEECH_MS    = 500;   // Raised from 350ms — avoids brief sound triggers
+      const SILENCE_TIMEOUT  = 1400;  // Raised from 1200ms — waits a bit longer before auto-stop
 
       if (speechRms > SPEECH_THRESHOLD) {
         if (speechStartRef.current === null) {
@@ -339,8 +339,8 @@ export default function ChatPage() {
     else {
       const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
       if (isAIActive) {
-        const BARGE_IN_THRESHOLD = 26.0; // Higher threshold to reject noise and speaker leakage
-        const MIN_BARGE_IN_MS    = 400;  // Must be sustained speech > 400ms
+        const BARGE_IN_THRESHOLD = 35.0; // Raised from 26 — rejects speaker bleed-through on phones
+        const MIN_BARGE_IN_MS    = 600;  // Raised from 400ms — avoids accidental barge-in from noise
 
         if (speechRms > BARGE_IN_THRESHOLD) {
           if (bargeInStartRef.current === null) {
