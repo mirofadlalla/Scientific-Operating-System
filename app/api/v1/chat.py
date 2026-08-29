@@ -203,6 +203,8 @@ async def _process_voice_turn(session: VoiceSession, audio_format: str):
     if not ok:
         return
 
+    await _safe_send_json(ws, {"type": "thought", "text": "Now retrieving information…"}, session)
+
     # Record STT metrics (non-blocking)
     try:
         monitoring.record_tokens(
@@ -220,8 +222,9 @@ async def _process_voice_turn(session: VoiceSession, audio_format: str):
         return
 
     # ── LLM streaming ────────────────────────────────────────────────────
-    await _safe_send_json(ws, {"type": "status", "status": "Processing..."}, session)
-    await _safe_send_json(ws, {"type": "ai_start"}, session)
+    await _safe_send_json(ws, {"type": "thought", "text": "Generating answer…"}, session)
+await _safe_send_json(ws, {"type": "ai_start"}, session)
+
 
     session.ai_streaming = True
     full_reply = ""

@@ -503,10 +503,38 @@ export default function ChatPage() {
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
 
       if (msg.type === 'vad_status') {
+  setVoiceSpeaking(msg.speaking);
+} else if (msg.type === 'status') {
+  setVoiceStatus(msg.status);
+  if (msg.status.includes('Transcribing')) setVoiceProcessing(true);
+} else if (msg.type === 'thought') {
+  // Speak thought instantly
+  if (soundEnabledRef.current) {
+    playGroqAudio(msg.text, soundEnabledRef);
+  }
+  setVoiceStatus(msg.text);
+} else if (msg.type === 'transcript') {
+  setVoiceTranscript(msg.text);
+  setVoiceStatus('Processing response…');
+  setVoiceProcessing(true);
+  if (msg.final) addMsg('user', msg.text);
+}
+  // Speak thought instantly
+  if (soundEnabledRef.current) {
+    playGroqAudio(msg.text, soundEnabledRef);
+  }
+  setVoiceStatus(msg.text);
+} else if (msg.type === 'transcript') {
         setVoiceSpeaking(msg.speaking);
       } else if (msg.type === 'status') {
         setVoiceStatus(msg.status);
         if (msg.status.includes('Transcribing')) setVoiceProcessing(true);
+      } else if (msg.type === 'thought') {
+     
+        if (soundEnabledRef.current) {
+          playGroqAudio(msg.text, soundEnabledRef);
+        }
+        setVoiceStatus(msg.text);
       } else if (msg.type === 'transcript') {
         setVoiceTranscript(msg.text);
         setVoiceStatus('Processing response…');
