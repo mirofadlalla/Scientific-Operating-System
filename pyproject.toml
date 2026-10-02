@@ -1,0 +1,16 @@
+[project]
+name = "scientific-operating-system"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=2,<3",
+    "httpx>=0.27",
+    "pydantic-settings>=2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
