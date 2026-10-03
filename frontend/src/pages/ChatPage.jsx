@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { API_BASE, WS_URL } from '../config';
 
 const SESSION_ID = 'session_' + Math.random().toString(36).slice(2, 9);
-const USER_ID    = 'user_' + Math.random().toString(36).slice(2, 9);
+const USER_ID    = 'user_'    + Math.random().toString(36).slice(2, 9);
 
 const THOUGHTS = [
   '⚙️  Kernel initialising…',
@@ -14,8 +14,29 @@ const THOUGHTS = [
 
 let currentAudio = null;
 
-// ── MIME type / format helpers ───────────────────────────────────────────────
-// Pick the best audio format the browser's MediaRecorder actually supports.
+// ── VAD CDN config (pinned versions) ─────────────────────────────────────────
+const VAD_VERSION    = '0.0.22';
+const ONNX_VERSION   = '1.14.0';
+const VAD_BUNDLE_URL = `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VERSION}/dist/bundle.min.js`;
+// @ricky0123/vad-web expects onnxruntime-web ESM shim loaded first
+const ONNX_URL       = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ONNX_VERSION}/dist/ort.wasm.min.js`;
+
+// Frame size for Silero VAD = 512 samples at 16 kHz → 32 ms per frame
+// redemptionFrames: 700 ms ÷ 32 ms ≈ 22
+// preSpeechPadFrames: 300 ms ÷ 32 ms ≈ 9
+// minSpeechFrames: 250 ms ÷ 32 ms ≈ 8
+const VAD_CONFIG = {
+  positiveSpeechThreshold:  0.6,
+  negativeSpeechThreshold:  0.35,
+  redemptionFrames:         22,
+  preSpeechPadFrames:       9,
+  minSpeechFrames:          8,
+};
+
+// ── Fallback energy VAD constants (used when Silero fails to load) ────────────
+const FALLBACK_SILENCE_MS = 1200;
+
+// ── MIME type / format helpers ────────────────────────────────────────────────
 const PREFERRED_MIME_TYPES = [
   { mime: 'audio/webm;codecs=opus', ext: 'webm' },
   { mime: 'audio/webm',             ext: 'webm' },
@@ -33,27 +54,24 @@ function pickRecorderFormat() {
   return { mime: '', ext: 'webm' };
 }
 
-// Compute both total RMS and speech-band (350Hz-3600Hz) RMS from frequency data.
-// Speech-band RMS rejects low frequency rumble (fans/AC) and high frequency hiss.
+// ── Energy-based VAD helpers (fallback only) ─────────────────────────────────
 function computeAudioMetrics(freqData) {
   let totalSum = 0;
   let speechSum = 0;
-  // Bins 2..20 (~350Hz - ~3600Hz) correspond to human vocal range
   const speechStart = 2;
   const speechEnd = Math.min(20, freqData.length);
   for (let i = 0; i < freqData.length; i++) {
     const val = freqData[i];
     totalSum += val * val;
-    if (i >= speechStart && i < speechEnd) {
-      speechSum += val * val;
-    }
+    if (i >= speechStart && i < speechEnd) speechSum += val * val;
   }
-  const totalRms = Math.sqrt(totalSum / freqData.length);
-  const speechCount = speechEnd - speechStart;
-  const speechRms = speechCount > 0 ? Math.sqrt(speechSum / speechCount) : totalRms;
+  const totalRms  = Math.sqrt(totalSum / freqData.length);
+  const cnt       = speechEnd - speechStart;
+  const speechRms = cnt > 0 ? Math.sqrt(speechSum / cnt) : totalRms;
   return { totalRms, speechRms };
 }
 
+// ── TTS helpers ───────────────────────────────────────────────────────────────
 async function playGroqAudio(text, soundEnabledRef) {
   if (!soundEnabledRef.current || !text || !text.trim()) return;
   stopTTS();
@@ -65,7 +83,7 @@ async function playGroqAudio(text, soundEnabledRef) {
     });
     if (res.ok) {
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
+      const url  = URL.createObjectURL(blob);
       currentAudio = new Audio(url);
       currentAudio.play().catch((e) => {
         console.warn('HTTP TTS autoplay blocked, falling back to SpeechSynthesis:', e);
@@ -81,21 +99,50 @@ async function playGroqAudio(text, soundEnabledRef) {
   }
   if (window.speechSynthesis) {
     const utt = new SpeechSynthesisUtterance(text.slice(0, 800));
-    utt.rate = 1.0;
-    utt.pitch = 1.0;
+    utt.rate = 1.0; utt.pitch = 1.0;
     window.speechSynthesis.speak(utt);
   }
 }
 
 function stopTTS() {
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio = null;
-  }
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
 }
 
-// ── Message component ────────────────────────────────────────────────────────
+// ── Float32Array → WAV bytes (16 kHz, mono, 16-bit PCM) ─────────────────────
+// Used when the vad-web utils.encodeWAV is unavailable.
+function float32ToWav(samples, sampleRate = 16000) {
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const byteRate   = sampleRate * blockAlign;
+  const dataSize   = samples.length * blockAlign;
+  const buffer     = new ArrayBuffer(44 + dataSize);
+  const view       = new DataView(buffer);
+  const writeStr   = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+  writeStr(0,  'RIFF');
+  view.setUint32(4,  36 + dataSize,        true);
+  writeStr(8,  'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16,                   true);
+  view.setUint16(20, 1,                    true); // PCM
+  view.setUint16(22, numChannels,          true);
+  view.setUint32(24, sampleRate,           true);
+  view.setUint32(28, byteRate,             true);
+  view.setUint16(32, blockAlign,           true);
+  view.setUint16(34, bitsPerSample,        true);
+  writeStr(36, 'data');
+  view.setUint32(40, dataSize,             true);
+  let off = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    off += 2;
+  }
+  return buffer;
+}
+
+// ── Message component ─────────────────────────────────────────────────────────
 function Message({ role, text, variant }) {
   if (role === 'sys') {
     return (
@@ -113,7 +160,7 @@ function Message({ role, text, variant }) {
   );
 }
 
-// ── Voice Overlay ────────────────────────────────────────────────────────────
+// ── Voice Overlay ─────────────────────────────────────────────────────────────
 function VoiceOverlay({ active, speaking, processing, transcript, status, onStop, waveHeights }) {
   return (
     <div className={`voice-overlay ${active ? 'active' : ''}`}>
@@ -139,13 +186,13 @@ function VoiceOverlay({ active, speaking, processing, transcript, status, onStop
   );
 }
 
-// ── Main Chat Page ───────────────────────────────────────────────────────────
+// ── Main Chat Page ────────────────────────────────────────────────────────────
 export default function ChatPage() {
-  const [messages, setMessages]       = useState([
+  const [messages, setMessages] = useState([
     { id: 0, role: 'sys', text: '⚡ AI-lixir Scientific OS online — Ask about drug discovery, ADMET, molecular analysis, or biomedical pathways.', variant: '' }
   ]);
-  const [inputText, setInputText]     = useState('');
-  const [sending, setSending]         = useState(false);
+  const [inputText,    setInputText]    = useState('');
+  const [sending,      setSending]      = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const soundEnabledRef = useRef(true);
 
@@ -156,41 +203,51 @@ export default function ChatPage() {
 
   // WebSocket state
   const [wsConnected, setWsConnected] = useState(false);
-  const wsRef                         = useRef(null);
-  const reconnectTimerRef             = useRef(null);
+  const wsRef              = useRef(null);
+  const reconnectTimerRef  = useRef(null);
 
   // Voice overlay state
-  const [voiceActive, setVoiceActive]       = useState(false);
-  const voiceActiveRef                      = useRef(false);
-  const [voiceSpeaking, setVoiceSpeaking]   = useState(false);
-  const [voiceProcessing, setVoiceProcessing] = useState(false);
-  const [voiceTranscript, setVoiceTranscript] = useState('');
-  const [voiceStatus, setVoiceStatus]       = useState('');
-  const [waveHeights, setWaveHeights]       = useState(Array(12).fill(4));
+  const [voiceActive,      setVoiceActive]      = useState(false);
+  const voiceActiveRef                          = useRef(false);
+  const [voiceSpeaking,    setVoiceSpeaking]    = useState(false);
+  const [voiceProcessing,  setVoiceProcessing]  = useState(false);
+  const [voiceTranscript,  setVoiceTranscript]  = useState('');
+  const [voiceStatus,      setVoiceStatus]      = useState('');
+  const [waveHeights,      setWaveHeights]      = useState(Array(12).fill(4));
 
-  // Audio & VAD refs
-  const mediaRecorderRef   = useRef(null);
+  // ── Silero VAD refs ───────────────────────────────────────────────────────
+  const vadRef             = useRef(null);   // MicVAD instance (singleton)
+  const vadReadyRef        = useRef(false);  // vad-web script loaded & VAD created
+  const vadFailedRef       = useRef(false);  // vad-web failed to load → use fallback
+  const bargeInTimerRef    = useRef(null);   // timer for 250ms barge-in confirmation
+  const bargeInActiveRef   = useRef(false);  // currently timing a barge-in
+
+  // ── Fallback (energy) VAD refs (used only when Silero unavailable) ─────────
   const audioContextRef    = useRef(null);
   const analyserRef        = useRef(null);
   const waveRafRef         = useRef(null);
-  const micStreamRef       = useRef(null);
-  const aiStreamingRef     = useRef(false);
-
-  // VAD Auto-endpointing & Barge-in refs
+  const micStreamRef       = useRef(null);   // kept alive across turns (Silero also uses this)
+  const mediaRecorderRef   = useRef(null);   // fallback only
   const speechDetectedRef  = useRef(false);
   const speechStartRef     = useRef(null);
   const silenceStartRef    = useRef(null);
-  const bargeInStartRef    = useRef(null);
   const isSpeakingRef      = useRef(false);
   const recordingActiveRef = useRef(false);
 
-  // Progressive audio queue for streaming TTS playback
-  const audioQueueRef      = useRef([]);   // Queue of Blob objects (each a complete WAV)
-  const isPlayingRef       = useRef(false); // Whether we're currently playing a chunk
-  const aiDoneRef          = useRef(false); // Whether ai_done has been received for current turn
+  // AI streaming refs
+  const aiStreamingRef     = useRef(false);
+  const audioQueueRef      = useRef([]);
+  const isPlayingRef       = useRef(false);
+  const aiDoneRef          = useRef(false);
 
   const chatEndRef = useRef(null);
   const nextId     = useRef(1);
+
+  // Keep voiceActiveRef in sync
+  const setVoiceActiveSync = (val) => {
+    voiceActiveRef.current = val;
+    setVoiceActive(val);
+  };
 
   const addMsg = (role, text, variant = '') => {
     const id = nextId.current++;
@@ -203,24 +260,12 @@ export default function ChatPage() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  // Turn sequence counter to prevent cross-turn chunk contamination
-  const turnSeqRef               = useRef(0);
-  const startVoiceListeningRef   = useRef(null);
-  const finalizeVoiceTurnRef     = useRef(null);
+  const startVoiceListeningRef = useRef(null);
 
-  // Keep voiceActiveRef in sync
-  const setVoiceActiveSync = (val) => {
-    voiceActiveRef.current = val;
-    setVoiceActive(val);
-  };
-
-  // ── Progressive Audio Queue Playback ─────────────────────────────────────
-  // Plays WAV chunks sequentially as they arrive from the server.
-  // When the last chunk finishes and ai_done was received, resumes mic.
+  // ── Progressive audio queue playback ────────────────────────────────────────
   const playNextInQueue = useCallback(() => {
     if (audioQueueRef.current.length === 0) {
       isPlayingRef.current = false;
-      // If AI is done generating, resume listening
       if (aiDoneRef.current) {
         aiDoneRef.current = false;
         setVoiceStatus('Ready');
@@ -233,78 +278,66 @@ export default function ChatPage() {
     isPlayingRef.current = true;
     setVoiceStatus('Speaking…');
     const blob = audioQueueRef.current.shift();
-    const url = URL.createObjectURL(blob);
+    const url  = URL.createObjectURL(blob);
     stopTTS();
     currentAudio = new Audio(url);
-    currentAudio.onended = () => {
-      URL.revokeObjectURL(url);
-      playNextInQueue();
-    };
-    currentAudio.onerror = () => {
-      URL.revokeObjectURL(url);
-      playNextInQueue();
-    };
-    currentAudio.play().catch(() => {
-      URL.revokeObjectURL(url);
-      playNextInQueue();
-    });
+    currentAudio.onended = () => { URL.revokeObjectURL(url); playNextInQueue(); };
+    currentAudio.onerror = () => { URL.revokeObjectURL(url); playNextInQueue(); };
+    currentAudio.play().catch(() => { URL.revokeObjectURL(url); playNextInQueue(); });
   }, []);
 
-  // ── VAD Finalize Turn (Auto-stop when user finishes speaking) ────────────
-  const finalizeVoiceTurn = useCallback(() => {
-    if (!recordingActiveRef.current) return;
-    recordingActiveRef.current = false;
-
-    const mr = mediaRecorderRef.current;
-    const currentTurn = turnSeqRef.current;
-    if (mr && mr.state !== 'inactive') {
-      const ext = mr._recExt || 'webm';
-      mr.onstop = () => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'audio_end', turn: currentTurn, format: ext }));
-        }
-      };
-      try { mr.stop(); } catch (_) {}
-    } else {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'audio_end', turn: currentTurn, format: 'webm' }));
-      }
-    }
-
+  // ── Send audio to server (called by both Silero and fallback paths) ─────────
+  const sendAudioToServer = useCallback((wavArrayBuffer, format = 'wav') => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const bytes  = new Uint8Array(wavArrayBuffer);
+    const binary = Array.from(bytes).map(b => String.fromCharCode(b)).join('');
+    const b64    = btoa(binary);
+    wsRef.current.send(JSON.stringify({ type: 'audio_chunk', data: b64, format }));
+    wsRef.current.send(JSON.stringify({ type: 'audio_end',   format }));
     setVoiceSpeaking(false);
     setVoiceProcessing(true);
     setVoiceStatus('Transcribing speech…');
     setWaveHeights(Array(12).fill(4));
   }, []);
-  finalizeVoiceTurnRef.current = finalizeVoiceTurn;
 
-  // ── Waveform animation & Client-side VAD & Barge-in Monitor ──────────────
+  // ── Waveform animation (shared, uses analyser when available) ───────────────
   const animateWave = useCallback(() => {
     if (!analyserRef.current || !voiceActiveRef.current) return;
     const data = new Uint8Array(analyserRef.current.frequencyBinCount);
     analyserRef.current.getByteFrequencyData(data);
-    const step = Math.floor(data.length / 12);
+    const step    = Math.floor(data.length / 12);
     const heights = Array.from({ length: 12 }, (_, i) => {
       const v = data[i * step] || 0;
       return Math.max(4, (v / 255) * 36);
     });
     setWaveHeights(heights);
 
-    const { totalRms, speechRms } = computeAudioMetrics(data);
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'vad_energy', rms: totalRms }));
+    if (voiceActiveRef.current) {
+      waveRafRef.current = requestAnimationFrame(animateWave);
     }
+  }, []);
 
-    // ── Mode A: User's turn to speak (recording active) ──
+  // ── Fallback energy VAD loop (only when vadFailedRef.current === true) ──────
+  const fallbackVADLoop = useCallback(() => {
+    if (!analyserRef.current || !voiceActiveRef.current) return;
+    const data = new Uint8Array(analyserRef.current.frequencyBinCount);
+    analyserRef.current.getByteFrequencyData(data);
+    const step    = Math.floor(data.length / 12);
+    const heights = Array.from({ length: 12 }, (_, i) => {
+      const v = data[i * step] || 0;
+      return Math.max(4, (v / 255) * 36);
+    });
+    setWaveHeights(heights);
+
+    const { speechRms } = computeAudioMetrics(data);
+
+    // Mode A: recording turn
     if (recordingActiveRef.current) {
-      const SPEECH_THRESHOLD = 28.0;  // Raised from 18 — rejects ambient noise on phones
-      const MIN_SPEECH_MS    = 500;   // Raised from 350ms — avoids brief sound triggers
-      const SILENCE_TIMEOUT  = 1400;  // Raised from 1200ms — waits a bit longer before auto-stop
+      const SPEECH_THRESHOLD = 28.0;
+      const MIN_SPEECH_MS    = 500;
 
       if (speechRms > SPEECH_THRESHOLD) {
-        if (speechStartRef.current === null) {
-          speechStartRef.current = Date.now();
-        }
+        if (speechStartRef.current === null) speechStartRef.current = Date.now();
         if (Date.now() - speechStartRef.current >= MIN_SPEECH_MS) {
           speechDetectedRef.current = true;
           if (!isSpeakingRef.current) {
@@ -321,107 +354,236 @@ export default function ChatPage() {
           setVoiceSpeaking(false);
           setVoiceStatus('Listening…');
         }
-        // If user has spoken at least once in this turn, check silence duration
         if (speechDetectedRef.current) {
           if (silenceStartRef.current === null) {
             silenceStartRef.current = Date.now();
-          } else if (Date.now() - silenceStartRef.current >= SILENCE_TIMEOUT) {
-            // User finished speaking! Auto-send to server
-            console.log('[VAD] Silence detected after speech. Auto-finalizing turn…');
-            if (finalizeVoiceTurnRef.current) {
-              finalizeVoiceTurnRef.current();
+          } else if (Date.now() - silenceStartRef.current >= FALLBACK_SILENCE_MS) {
+            console.log('[VAD-fallback] Silence after speech — finalising turn');
+            const mr = mediaRecorderRef.current;
+            if (mr && mr.state !== 'inactive') {
+              recordingActiveRef.current = false;
+              const ext = mr._recExt || 'webm';
+              mr.onstop = () => {
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(JSON.stringify({ type: 'audio_end', format: ext }));
+                }
+              };
+              try { mr.stop(); } catch (_) {}
+              setVoiceSpeaking(false);
+              setVoiceProcessing(true);
+              setVoiceStatus('Transcribing speech…');
+              setWaveHeights(Array(12).fill(4));
             }
           }
         }
       }
-    } 
-    // ── Mode B: AI is Thinking or Speaking (Barge-in detection) ──
+    }
+    // Mode B: barge-in while AI speaking
     else {
       const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
       if (isAIActive) {
-        const BARGE_IN_THRESHOLD = 35.0; // Raised from 26 — rejects speaker bleed-through on phones
-        const MIN_BARGE_IN_MS    = 600;  // Raised from 400ms — avoids accidental barge-in from noise
-
+        const BARGE_IN_THRESHOLD = 35.0;
+        const MIN_BARGE_IN_MS    = 600;
         if (speechRms > BARGE_IN_THRESHOLD) {
-          if (bargeInStartRef.current === null) {
-            bargeInStartRef.current = Date.now();
-          } else if (Date.now() - bargeInStartRef.current >= MIN_BARGE_IN_MS) {
-            // ── Genuine user speech detected while AI was speaking → BARGE IN! ──
-            console.log('[VAD] Barge-in triggered! Sustained speech detected during AI output.');
-            bargeInStartRef.current = null;
+          if (bargeInTimerRef.current === null) {
+            bargeInTimerRef.current = Date.now();
+          } else if (Date.now() - bargeInTimerRef.current >= MIN_BARGE_IN_MS) {
+            console.log('[VAD-fallback] Barge-in triggered');
+            bargeInTimerRef.current = null;
             stopTTS();
             audioQueueRef.current = [];
-            isPlayingRef.current = false;
+            isPlayingRef.current  = false;
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
             }
-            if (startVoiceListeningRef.current) {
-              startVoiceListeningRef.current();
-            }
+            if (startVoiceListeningRef.current) startVoiceListeningRef.current();
           }
         } else {
-          bargeInStartRef.current = null;
+          bargeInTimerRef.current = null;
         }
       }
     }
 
     if (voiceActiveRef.current) {
-      waveRafRef.current = requestAnimationFrame(animateWave);
+      waveRafRef.current = requestAnimationFrame(fallbackVADLoop);
     }
   }, []);
 
-  // ── Start Listening for a Voice Turn ─────────────────────────────────────
+  // ── Load Silero VAD from CDN and create singleton instance ──────────────────
+  const initSileroVAD = useCallback(async (stream) => {
+    if (vadReadyRef.current || vadFailedRef.current) return;
+
+    try {
+      // Load onnxruntime-web shim first (sets window.ort)
+      await new Promise((resolve, reject) => {
+        if (window.ort) { resolve(); return; }
+        const s = document.createElement('script');
+        s.src   = ONNX_URL;
+        s.onload  = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+
+      // Load vad-web bundle (sets window.vad)
+      await new Promise((resolve, reject) => {
+        if (window.vad) { resolve(); return; }
+        const s = document.createElement('script');
+        s.src   = VAD_BUNDLE_URL;
+        s.onload  = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+
+      if (!window.vad?.MicVAD) throw new Error('window.vad.MicVAD not found after script load');
+
+      const myvad = await window.vad.MicVAD.new({
+        stream,
+        ...VAD_CONFIG,
+        baseAssetPath:  `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VERSION}/dist/`,
+        onnxWASMBasePath: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ONNX_VERSION}/dist/`,
+
+        onSpeechStart: () => {
+          console.log('[Silero VAD] onSpeechStart');
+          setVoiceSpeaking(true);
+          setVoiceStatus('Listening (speaking)…');
+
+          // Barge-in: if AI is active, start 250ms confirmation timer
+          const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
+          if (isAIActive) {
+            bargeInActiveRef.current = true;
+            // Duck volume immediately
+            if (currentAudio) currentAudio.volume = 0.15;
+            bargeInTimerRef.current = setTimeout(() => {
+              if (!bargeInActiveRef.current) return; // misfire cancelled it
+              console.log('[Silero VAD] Barge-in confirmed — interrupting AI');
+              bargeInActiveRef.current = false;
+              stopTTS();
+              audioQueueRef.current = [];
+              isPlayingRef.current  = false;
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
+              }
+              // startVoiceListeningRef will be called after the VAD onSpeechEnd fires
+            }, 250);
+          }
+        },
+
+        onVADMisfire: () => {
+          console.log('[Silero VAD] onVADMisfire — cancelling barge-in');
+          bargeInActiveRef.current = false;
+          if (bargeInTimerRef.current) {
+            clearTimeout(bargeInTimerRef.current);
+            bargeInTimerRef.current = null;
+          }
+          // Restore volume
+          if (currentAudio) currentAudio.volume = 1.0;
+          setVoiceSpeaking(false);
+          setVoiceStatus('Listening…');
+        },
+
+        onSpeechEnd: (audioFloat32) => {
+          console.log('[Silero VAD] onSpeechEnd — encoding WAV, samples:', audioFloat32.length);
+          setVoiceSpeaking(false);
+
+          // If this was a barge-in, cancel the pending timer (the speech ended normally)
+          if (bargeInTimerRef.current) {
+            clearTimeout(bargeInTimerRef.current);
+            bargeInTimerRef.current = null;
+          }
+          bargeInActiveRef.current = false;
+
+          // Encode Float32Array → WAV using vad-web utils if available, else manual
+          let wavBuffer;
+          try {
+            const blob = window.vad.utils.encodeWAV(audioFloat32);
+            // encodeWAV returns a Blob; convert to ArrayBuffer for base64
+            const reader = new FileReader();
+            reader.onload = () => { sendAudioToServer(reader.result, 'wav'); };
+            reader.readAsArrayBuffer(blob);
+            return;
+          } catch (e) {
+            console.warn('[Silero VAD] utils.encodeWAV failed, using manual encoder:', e);
+            wavBuffer = float32ToWav(audioFloat32, 16000);
+          }
+          sendAudioToServer(wavBuffer, 'wav');
+        },
+      });
+
+      vadRef.current   = myvad;
+      vadReadyRef.current = true;
+      console.log('[Silero VAD] Initialised successfully');
+    } catch (err) {
+      console.warn('[Silero VAD] Failed to load — falling back to energy VAD:', err);
+      vadFailedRef.current = true;
+    }
+  }, [sendAudioToServer]);
+
+  // ── Start listening for a voice turn (Silero path) ─────────────────────────
   const startVoiceListening = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     stopTTS();
-
-    // Increment turn sequence for the new utterance
-    turnSeqRef.current += 1;
-
-    // Reset VAD & Barge-in state for the new utterance
+    aiDoneRef.current          = false;
     speechDetectedRef.current  = false;
     speechStartRef.current     = null;
     silenceStartRef.current    = null;
-    bargeInStartRef.current    = null;
+    bargeInTimerRef.current    = null;
+    bargeInActiveRef.current   = false;
     isSpeakingRef.current      = false;
-    aiDoneRef.current          = false;
     recordingActiveRef.current = true;
 
     try {
-      let stream = micStreamRef.current;
-      if (!stream || !stream.active) {
-        stream = await navigator.mediaDevices.getUserMedia({
+      // Acquire mic once; reuse for subsequent turns
+      if (!micStreamRef.current || !micStreamRef.current.active) {
+        micStreamRef.current = await navigator.mediaDevices.getUserMedia({
           audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
+            echoCancellation:  true,
+            noiseSuppression:  true,
+            autoGainControl:   false,   // critical: AGC skews Silero calibration
           }
         });
-        micStreamRef.current = stream;
       }
 
+      // Build AudioContext + Analyser for waveform (reuse across turns)
       if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
         audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
       }
       if (audioContextRef.current.state === 'suspended') {
         await audioContextRef.current.resume();
       }
-
       if (!analyserRef.current) {
-        const source = audioContextRef.current.createMediaStreamSource(stream);
+        const src = audioContextRef.current.createMediaStreamSource(micStreamRef.current);
         analyserRef.current = audioContextRef.current.createAnalyser();
         analyserRef.current.fftSize = 256;
-        source.connect(analyserRef.current);
+        src.connect(analyserRef.current);
       }
 
-      // Stop previous recorder if active
+      setVoiceActiveSync(true);
+      setVoiceProcessing(false);
+      setVoiceStatus('Listening… (speak now)');
+
+      cancelAnimationFrame(waveRafRef.current);
+
+      if (!vadFailedRef.current) {
+        // ── Silero path ────────────────────────────────────────────────────
+        await initSileroVAD(micStreamRef.current);
+
+        if (vadReadyRef.current && vadRef.current) {
+          // Resume/start the VAD (it keeps the mic open across turns)
+          vadRef.current.start();
+          waveRafRef.current = requestAnimationFrame(animateWave);
+          return;
+        }
+        // If initSileroVAD set vadFailedRef, fall through to energy VAD
+      }
+
+      // ── Fallback energy VAD path ───────────────────────────────────────
+      console.warn('[VAD] Using energy-based fallback VAD');
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try { mediaRecorderRef.current.stop(); } catch (_) {}
       }
-
       const { mime: recMime, ext: recExt } = pickRecorderFormat();
       const mrOptions = recMime ? { mimeType: recMime } : {};
-      const mr = new MediaRecorder(stream, mrOptions);
+      const mr = new MediaRecorder(micStreamRef.current, mrOptions);
       mediaRecorderRef.current = mr;
       mr._recExt = recExt;
 
@@ -431,51 +593,36 @@ export default function ChatPage() {
         reader.onload = () => {
           const b64 = reader.result?.split(',')[1];
           if (b64 && wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({
-              type: 'audio_chunk',
-              data: b64,
-              format: recExt
-            }));
+            wsRef.current.send(JSON.stringify({ type: 'audio_chunk', data: b64, format: recExt }));
           }
         };
         reader.readAsDataURL(e.data);
       };
-
       mr.start(250);
-      setVoiceActiveSync(true);
-      setVoiceProcessing(false);
-      setVoiceStatus('Listening… (speak now)');
+      waveRafRef.current = requestAnimationFrame(fallbackVADLoop);
 
-      cancelAnimationFrame(waveRafRef.current);
-      waveRafRef.current = requestAnimationFrame(animateWave);
     } catch (err) {
       console.error('[Mic Error]', err);
       recordingActiveRef.current = false;
       addMsg('ai', `⚠️ Microphone error: ${err.message}`, 'error');
     }
-  }, [animateWave]);
+  }, [animateWave, fallbackVADLoop, initSileroVAD]);
 
-  // Keep ref in sync so playNextInQueue & animateWave can call it without circular deps
   startVoiceListeningRef.current = startVoiceListening;
 
-  // ── WebSocket setup ─────────────────────────────────────────────────────
+  // ── WebSocket setup ──────────────────────────────────────────────────────────
   const connectWS = useCallback(() => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    if (wsRef.current) {
-      try { wsRef.current.close(); } catch (_) {}
-    }
+    if (wsRef.current) { try { wsRef.current.close(); } catch (_) {} }
 
     const ws = new WebSocket(`${WS_URL}?session_id=${SESSION_ID}`);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
-    ws.onopen  = () => {
-      console.log('[WS] Connected');
-      setWsConnected(true);
-    };
+    ws.onopen  = () => { console.log('[WS] Connected'); setWsConnected(true); };
     ws.onclose = () => {
       console.log('[WS] Disconnected, will reconnect in 3s');
       setWsConnected(false);
@@ -485,15 +632,11 @@ export default function ChatPage() {
 
     ws.onmessage = (ev) => {
       // ── Binary frame: TTS audio chunk ──────────────────────────────────
-      // Each binary frame is a complete WAV for one TTS batch — queue it
       if (ev.data instanceof ArrayBuffer) {
         if (soundEnabledRef.current) {
           const blob = new Blob([ev.data], { type: 'audio/wav' });
           audioQueueRef.current.push(blob);
-          // If nothing is currently playing, start playing
-          if (!isPlayingRef.current) {
-            playNextInQueue();
-          }
+          if (!isPlayingRef.current) playNextInQueue();
         }
         return;
       }
@@ -503,37 +646,17 @@ export default function ChatPage() {
       try { msg = JSON.parse(ev.data); } catch (_) { return; }
 
       if (msg.type === 'vad_status') {
-  setVoiceSpeaking(msg.speaking);
-} else if (msg.type === 'status') {
-  setVoiceStatus(msg.status);
-  if (msg.status.includes('Transcribing')) setVoiceProcessing(true);
-} else if (msg.type === 'thought') {
-  // Speak thought instantly
-  if (soundEnabledRef.current) {
-    playGroqAudio(msg.text, soundEnabledRef);
-  }
-  setVoiceStatus(msg.text);
-} else if (msg.type === 'transcript') {
-  setVoiceTranscript(msg.text);
-  setVoiceStatus('Processing response…');
-  setVoiceProcessing(true);
-  if (msg.final) addMsg('user', msg.text);
-}
-  // Speak thought instantly
-  if (soundEnabledRef.current) {
-    playGroqAudio(msg.text, soundEnabledRef);
-  }
-  setVoiceStatus(msg.text);
-} else if (msg.type === 'transcript') {
         setVoiceSpeaking(msg.speaking);
       } else if (msg.type === 'status') {
         setVoiceStatus(msg.status);
         if (msg.status.includes('Transcribing')) setVoiceProcessing(true);
-      } else if (msg.type === 'thought') {
-     
-        if (soundEnabledRef.current) {
-          playGroqAudio(msg.text, soundEnabledRef);
+        // "No speech detected" → restart listening after brief delay
+        if (msg.status === 'No speech detected') {
+          setVoiceProcessing(false);
+          setVoiceStatus('Listening… (speak now)');
         }
+      } else if (msg.type === 'thought') {
+        if (soundEnabledRef.current) playGroqAudio(msg.text, soundEnabledRef);
         setVoiceStatus(msg.text);
       } else if (msg.type === 'transcript') {
         setVoiceTranscript(msg.text);
@@ -541,10 +664,9 @@ export default function ChatPage() {
         setVoiceProcessing(true);
         if (msg.final) addMsg('user', msg.text);
       } else if (msg.type === 'ai_start') {
-        // Clear any old queued audio
         stopTTS();
         audioQueueRef.current = [];
-        isPlayingRef.current = false;
+        isPlayingRef.current  = false;
         aiStreamingRef.current = true;
         setVoiceStatus('Responding…');
       } else if (msg.type === 'ai_token') {
@@ -561,7 +683,6 @@ export default function ChatPage() {
         aiStreamingRef.current = false;
         setVoiceProcessing(false);
         setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m));
-        // Audio is already playing progressively — just update status
         if (isPlayingRef.current || audioQueueRef.current.length > 0) {
           setVoiceStatus('Speaking…');
         } else {
@@ -573,8 +694,8 @@ export default function ChatPage() {
         aiDoneRef.current = true;
       } else if (msg.type === 'interrupted') {
         stopTTS();
-        audioQueueRef.current = [];
-        isPlayingRef.current = false;
+        audioQueueRef.current  = [];
+        isPlayingRef.current   = false;
         aiStreamingRef.current = false;
         setVoiceProcessing(false);
         setVoiceStatus('Interrupted');
@@ -590,17 +711,12 @@ export default function ChatPage() {
   useEffect(() => {
     connectWS();
     return () => {
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-      if (wsRef.current) {
-        try { wsRef.current.close(); } catch (_) {}
-      }
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (wsRef.current) { try { wsRef.current.close(); } catch (_) {} }
     };
   }, [connectWS]);
 
-  // Keepalive ping every 20s
+  // Keepalive ping every 20 s
   useEffect(() => {
     const iv = setInterval(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -610,16 +726,22 @@ export default function ChatPage() {
     return () => clearInterval(iv);
   }, []);
 
-  // ── Stop Voice Completely ────────────────────────────────────────────────
+  // ── Stop voice completely ──────────────────────────────────────────────────
   const stopVoice = () => {
     recordingActiveRef.current = false;
     setVoiceActiveSync(false);
     cancelAnimationFrame(waveRafRef.current);
 
-    const mr = mediaRecorderRef.current;
-    if (mr && mr.state !== 'inactive') {
-      try { mr.stop(); } catch (_) {}
+    // Pause (not destroy) the Silero VAD so we can resume next session
+    if (vadRef.current) {
+      try { vadRef.current.pause(); } catch (_) {}
     }
+
+    // Stop fallback recorder if running
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state !== 'inactive') { try { mr.stop(); } catch (_) {} }
+
+    // Stop mic tracks and close audio context
     if (micStreamRef.current) {
       micStreamRef.current.getTracks().forEach(t => t.stop());
       micStreamRef.current = null;
@@ -630,17 +752,25 @@ export default function ChatPage() {
     }
     analyserRef.current = null;
     mediaRecorderRef.current = null;
+
+    // Destroy the VAD instance so getUserMedia is released
+    if (vadRef.current) {
+      try { vadRef.current.destroy(); } catch (_) {}
+      vadRef.current    = null;
+      vadReadyRef.current = false;
+    }
+
     setVoiceSpeaking(false);
     setVoiceProcessing(false);
     setVoiceStatus('');
     setWaveHeights(Array(12).fill(4));
     stopTTS();
     audioQueueRef.current = [];
-    isPlayingRef.current = false;
-    aiDoneRef.current = false;
+    isPlayingRef.current  = false;
+    aiDoneRef.current     = false;
   };
 
-  // ── Text submit ───────────────────────────────────────────────────────────
+  // ── Text submit ────────────────────────────────────────────────────────────
   const submitText = async () => {
     const text = inputText.trim();
     if (!text || sending) return;
@@ -650,9 +780,7 @@ export default function ChatPage() {
     addMsg('user', text);
 
     const thinkId = nextId.current++;
-    setMessages(prev => [...prev, {
-      id: thinkId, role: 'ai_think', text: '', thoughts: [THOUGHTS[0]], variant: ''
-    }]);
+    setMessages(prev => [...prev, { id: thinkId, role: 'ai_think', text: '', thoughts: [THOUGHTS[0]], variant: '' }]);
 
     let thinkTimer = 0;
     const iv = setInterval(() => {
@@ -723,7 +851,7 @@ export default function ChatPage() {
               </div>
             );
           }
-          const isAI = msg.role === 'ai';
+          const isAI   = msg.role === 'ai';
           const isUser = msg.role === 'user';
           const roleClass = isAI ? 'ai' : isUser ? 'user' : 'sys';
 
@@ -736,8 +864,8 @@ export default function ChatPage() {
                 {(() => {
                   const imgMatch = msg.text.match(/!\[(.*?)\]\((https:\/\/pubchem\.ncbi\.nlm\.nih\.gov\/rest\/pug\/compound\/.*?\/PNG.*?)\)/);
                   if (imgMatch) {
-                    const altText = imgMatch[1];
-                    const imgUrl = imgMatch[2];
+                    const altText  = imgMatch[1];
+                    const imgUrl   = imgMatch[2];
                     const cleanText = msg.text.replace(imgMatch[0], '').trim();
                     return (
                       <>
@@ -790,7 +918,7 @@ export default function ChatPage() {
 
           <button
             className={`icon-btn ${soundEnabled ? 'ws-on' : ''}`}
-            title={soundEnabled ? "Audio response: ON" : "Audio response: OFF"}
+            title={soundEnabled ? 'Audio response: ON' : 'Audio response: OFF'}
             onClick={() => {
               if (soundEnabled) stopTTS();
               setSoundEnabledSync(!soundEnabled);

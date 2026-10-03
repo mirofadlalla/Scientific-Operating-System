@@ -1,7 +1,7 @@
 """
 app.services.voice_service
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-Voice-turn pipeline (STT → orchestrator stream → TTS), VAD classification,
+Voice-turn pipeline (STT → orchestrator stream → TTS),
 heartbeat, and task cancellation for the WebSocket voice channel.
 """
 import asyncio
@@ -9,18 +9,12 @@ import logging
 import time
 
 from app import monitoring
-from app.audio import audio_processor, voice_log
+from app.audio import AudioTooShortError, audio_processor, voice_log
 from app.config import settings
 from app.core.orchestration import route_and_stream
 from app.services.voice_session import VoiceSession
 
 logger = logging.getLogger(__name__)
-
-
-def detect_speech(rms: float) -> bool:
-    """Classify a client-side RMS reading (0-255 scale or raw 16-bit scale)."""
-    threshold = 18.0 if rms <= 255.0 else 1200.0
-    return audio_processor.is_speech(rms, threshold=threshold)
 
 
 async def cancel_current_task(session: VoiceSession) -> None:
@@ -72,12 +66,21 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
 
     try:
         transcript = await audio_processor.transcribe_chunks(chunks, audio_format)
+    except AudioTooShortError:
+        await session.send_json({"type": "status", "status": "No speech detected"})
+        await session.send_json({"type": "ai_done"})
+        return
     except Exception as exc:
         await session.send_json({"type": "error", "message": f"Transcription failed: {exc}"})
         return
 
     stt_ms = round((time.time() - stt_start) * 1000, 1)
     voice_log("stt_done", turn_id=turn_id, latency_ms=stt_ms, transcript=transcript[:60])
+
+    if not transcript.strip():
+        await session.send_json({"type": "status", "status": "No speech detected"})
+        await session.send_json({"type": "ai_done"})
+        return
 
     if not await session.send_json({"type": "transcript", "text": transcript, "final": True}):
         return

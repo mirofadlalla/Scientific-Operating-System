@@ -16,17 +16,104 @@ if hasattr(sys.stderr, 'reconfigure'):
 import io
 import re
 import asyncio
-import struct
-import math
 import time
 import json
 import logging
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Iterable
 from pathlib import Path
 from openai import AsyncOpenAI
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+MIN_AUDIO_BYTES = 1024
+
+WHISPER_HALLUCINATION_BLOCKLIST = frozenset({
+    "thanks for watching",
+    "thank you for watching",
+    "thanks for watching.",
+    "thank you for watching.",
+    "ترجمة نانسي قنقر",
+    "اشتركوا في القناة",
+})
+
+
+class AudioTooShortError(ValueError):
+    """Raised when an audio payload is too small to transcribe."""
+
+    def __init__(self, size: int, minimum: int = MIN_AUDIO_BYTES):
+        self.size = size
+        self.minimum = minimum
+        super().__init__(f"audio_too_short:{size}<{minimum}")
+
+
+def _normalize_transcript_line(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip()).strip(" .!?,،؟")
+    return cleaned.casefold()
+
+
+def _segment_field(segment: Any, name: str, default: float = 0.0) -> float:
+    if isinstance(segment, dict):
+        value = segment.get(name, default)
+    else:
+        value = getattr(segment, name, default)
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _segment_text(segment: Any) -> str:
+    if isinstance(segment, dict):
+        return str(segment.get("text") or "")
+    return str(getattr(segment, "text", "") or "")
+
+
+def _is_unreliable_segment(segment: Any) -> bool:
+    no_speech_prob = _segment_field(segment, "no_speech_prob", 0.0)
+    avg_logprob = _segment_field(segment, "avg_logprob", 0.0)
+    if no_speech_prob > 0.6:
+        return True
+    if avg_logprob < -1.0 and no_speech_prob > 0.3:
+        return True
+    return False
+
+
+def _result_segments(result: Any) -> list[Any]:
+    if result is None or isinstance(result, str):
+        return []
+    if isinstance(result, dict):
+        segments = result.get("segments") or []
+    else:
+        segments = getattr(result, "segments", None) or []
+    return list(segments) if isinstance(segments, Iterable) else []
+
+
+def _result_text(result: Any) -> str:
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        return str(result.get("text") or "")
+    return str(getattr(result, "text", "") or "")
+
+
+def filter_whisper_hallucinations(result: Any) -> str:
+    """Drop silent/noisy Whisper segments and known hallucination phrases."""
+    segments = _result_segments(result)
+    if segments:
+        kept = [_segment_text(seg) for seg in segments if not _is_unreliable_segment(seg)]
+        text = " ".join(part.strip() for part in kept if part and part.strip())
+    else:
+        text = _result_text(result)
+
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    if _normalize_transcript_line(text) in {
+        _normalize_transcript_line(item) for item in WHISPER_HALLUCINATION_BLOCKLIST
+    }:
+        return ""
+    return text
 
 
 def voice_log(event: str, **kwargs):
@@ -159,12 +246,8 @@ class AudioProcessor:
         if not audio_file:
             raise ValueError("Empty audio buffer — nothing to transcribe")
 
-        # Minimum sanity check — reject obviously corrupt/empty payloads
-        MIN_AUDIO_BYTES = 1024  # ~1 KB; anything smaller is almost certainly unusable
         if len(audio_file) < MIN_AUDIO_BYTES:
-            raise ValueError(
-                f"Audio too short ({len(audio_file)} bytes) — please speak for at least 1 second"
-            )
+            raise AudioTooShortError(len(audio_file))
 
         # Ensure WebM / audio containers start at their magic header
         # (prevents 400 invalid media file if stray cluster bytes were prepended)
@@ -203,17 +286,16 @@ class AudioProcessor:
             transcript = await self.groq_client.audio.transcriptions.create(
                 model=settings.GROQ_WHISPER_MODEL,
                 file=audio_stream,
-                response_format="text",
+                response_format="verbose_json",
                 prompt=whisper_prompt,
             )
 
-            # Groq returns plain text when response_format="text"
-            result_text = transcript if isinstance(transcript, str) else transcript.text
+            result_text = filter_whisper_hallucinations(transcript)
             stt_ms = round((time.time() - stt_start) * 1000, 1)
             print(f"[STT OK] {len(audio_file):,} bytes → \"{result_text[:80]}\" ({stt_ms}ms)")
             voice_log("stt_completed", audio_bytes=len(audio_file), format=effective_format,
                        latency_ms=stt_ms, transcript_preview=result_text[:60])
-            return result_text.strip()
+            return result_text
 
         except Exception as exc:
             print(f"[STT FAIL] {len(audio_file):,} bytes ({effective_format}): {repr(exc)}")
@@ -307,7 +389,7 @@ class AudioProcessor:
             return
 
         # Batch sentences into groups to reduce TTS API calls
-        batches = batch_sentences_for_tts(sentences, min_chars=120)
+        batches = batch_sentences_for_tts(sentences, min_chars=250)
 
         voice_log("tts_chunked_start", sentence_count=len(sentences),
                    batch_count=len(batches), text_preview=text[:80])
@@ -329,48 +411,6 @@ class AudioProcessor:
                 logger.warning(f"[TTS batch {idx}] Failed: {exc}")
                 # Continue with remaining batches — don't break the stream
                 continue
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # VAD  —  Energy-based Voice Activity Detection (no extra libraries)
-    # ──────────────────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def compute_rms(pcm_bytes: bytes, sample_width: int = 2) -> float:
-        """
-        Compute RMS energy of raw PCM bytes.
-        sample_width=2 means 16-bit samples (standard for WebAudio ScriptProcessor).
-        """
-        if len(pcm_bytes) < sample_width:
-            return 0.0
-        num_samples = len(pcm_bytes) // sample_width
-        fmt = f"<{num_samples}h"  # little-endian 16-bit signed
-        try:
-            samples = struct.unpack(fmt, pcm_bytes[:num_samples * sample_width]) 
-            # pcm is [-200 300 1000 ...] but it comes with bytes so we use struct.unpack to convert it to integers
-            rms = math.sqrt(sum(s * s for s in samples) / num_samples) # الـ RMS يمثل متوسط طاقة الإشارة الصوتية. كلما ارتفع، كان الصوت أعلى.
-            return rms
-        except struct.error:
-            return 0.0
-        '''
-         ليه بنحسب RMS؟
-        الصوت عبارة عن موجة.
-        لو الميكروفون ساكت:
-
-        1 / -2 / 3 / -1 / 0
-
-        الـ RMS هيبقى صغير جداً.
-
-        لكن لو حد بيتكلم:
-        300 / 800 / 1500 / 700 / 900
-        الـ RMS هيكبر.
-
-        فهو مقياس لشدة الصوت بغض النظر عن الإشارة الموجبة أو السالبة.
-        '''
-
-    @staticmethod
-    def is_speech(rms: float, threshold: float = 1200.0) -> bool:
-        """Simple energy threshold VAD."""
-        return rms > threshold
 
     # ──────────────────────────────────────────────────────────────────────────
     # Convenience pipelines

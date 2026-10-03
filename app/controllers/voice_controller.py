@@ -9,12 +9,10 @@ Client → Server messages (JSON text frames):
     {"type": "audio_chunk", "data": "<base64 audio>", "format": "webm"}
     {"type": "audio_end"}                 — user finished speaking
     {"type": "interrupt"}                 — interrupt current AI response
-    {"type": "vad_energy", "rms": 342.5}  — client-side VAD reading
     {"type": "ping"}                      — keepalive
 
 Server → Client messages:
     JSON text frames:
-        {"type": "vad_status", "speaking": true/false}
         {"type": "transcript",  "text": "...", "final": true/false}
         {"type": "ai_start"} | {"type": "ai_token", "token": "...", "done": false}
         {"type": "ai_done"}  | {"type": "interrupted"}  | {"type": "pong"}
@@ -54,18 +52,7 @@ async def _on_audio_chunk(session: VoiceSession, msg: dict) -> None:
         session.current_task.cancel()
 
 
-async def _on_vad_energy(session: VoiceSession, msg: dict) -> None:
-    rms = float(msg.get("rms", 0))
-    speaking = voice_service.detect_speech(rms)
-    if speaking != session.is_speaking:
-        session.is_speaking = speaking
-        await session.send_json({"type": "vad_status", "speaking": speaking, "rms": rms})
-
-
 async def _on_audio_end(session: VoiceSession, msg: dict) -> None:
-    # Bump the sequence so trailing in-flight chunks from the last turn are dropped.
-    session.current_turn_seq += 1
-
     if session.current_task and not session.current_task.done():
         session.interrupted = True
         await voice_service.cancel_current_task(session)
@@ -92,7 +79,6 @@ async def _on_ping(session: VoiceSession, msg: dict) -> None:
 
 _HANDLERS = {
     "audio_chunk": _on_audio_chunk,
-    "vad_energy": _on_vad_energy,
     "audio_end": _on_audio_end,
     "interrupt": _on_interrupt,
     "ping": _on_ping,

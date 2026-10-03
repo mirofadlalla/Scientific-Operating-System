@@ -20,14 +20,10 @@ class VoiceSession:
         self.ws = ws
         self.session_id = session_id
         self.audio_chunks: List[bytes] = []
-        self.is_speaking = False        # VAD: user is currently speaking
         self.ai_streaming = False       # AI is currently streaming a response
         self.interrupted = False        # User interrupted AI mid-stream
-        self.silence_frames = 0
-        self.SILENCE_THRESHOLD = 8      # ~800 ms of silence before auto-stop
         self.current_task: Optional[asyncio.Task] = None
         self.turn_id: str = ""
-        self.current_turn_seq: int = 0  # Rejects stray chunks from prior turns
         self._closed = False
 
     def new_turn(self) -> str:

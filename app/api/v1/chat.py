@@ -8,6 +8,7 @@ WS   /api/v1/ws/voice     — Real-time bi-directional voice channel
 from fastapi import APIRouter, WebSocket
 
 from app.controllers import chat_controller, voice_controller
+
 from app.schemas.chat import UserQuery
 
 router = APIRouter(tags=["Chat"])

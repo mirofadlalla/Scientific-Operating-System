@@ -235,29 +235,37 @@ class TestWebSocketVoicePipeline:
             assert has_transcript, f"No transcript received. Got: {received_types}"
             assert has_ai_done, f"No ai_done received. Got: {received_types}"
 
-    def test_vad_energy_updates_status(self, client):
-        """VAD energy messages should trigger vad_status responses when threshold changes."""
-        def receive_vad_status(ws):
-            for _ in range(5):
-                resp = json.loads(ws.receive_text())
-                if resp.get("type") == "vad_status":
-                    return resp
-            return None
-
-        with client.websocket_connect("/api/v1/ws/voice?session_id=test_vad") as ws:
-            # Send high energy (should detect speech)
-            ws.send_text(json.dumps({"type": "vad_energy", "rms": 5000.0}))
-            resp = receive_vad_status(ws)
-            assert resp is not None
-            assert resp["type"] == "vad_status"
-            assert resp["speaking"] is True
-
-            # Send low energy (should detect silence)
-            ws.send_text(json.dumps({"type": "vad_energy", "rms": 1.0}))
-            resp = receive_vad_status(ws)
-            assert resp is not None
-            assert resp["type"] == "vad_status"
-            assert resp["speaking"] is False
+    def test_empty_transcript_returns_to_listening(self, client, mock_tts_chunked, mock_orchestration):
+        """Empty STT should emit No speech detected + ai_done without starting the LLM."""
+        with patch("app.audio.audio_processor.transcribe_chunks", new_callable=AsyncMock) as mock:
+            mock.return_value = ""
+            audio = make_test_audio_webm()
+            chunks = make_audio_chunks(audio, chunk_size=512)
+            with client.websocket_connect("/api/v1/ws/voice?session_id=test_no_speech") as ws:
+                for chunk_msg in chunks:
+                    ws.send_text(chunk_msg)
+                ws.send_text(json.dumps({"type": "audio_end", "format": "wav"}))
+                types = []
+                status_text = None
+                for _ in range(20):
+                    try:
+                        msg = ws.receive()
+                        text = msg.get("text") if isinstance(msg, dict) else msg
+                        if text and isinstance(text, str):
+                            data = json.loads(text)
+                            types.append(data["type"])
+                            if data["type"] == "status":
+                                status_text = data.get("status")
+                            if data["type"] == "ai_done":
+                                break
+                    except Exception:
+                        break
+                assert "status" in types
+                assert status_text == "No speech detected"
+                assert "ai_done" in types
+                assert "transcript" not in types
+                assert "ai_start" not in types
+                assert "ai_token" not in types
 
 
 class TestWebSocketDisconnect:
@@ -384,12 +392,49 @@ class TestAudioProcessorUnit:
         data = b'\x00\x00\x00\x00' + b'\x00' * 100
         assert AudioProcessor._detect_format(data) == ''
 
-    def test_is_speech_threshold(self):
-        from app.audio import AudioProcessor
-        assert AudioProcessor.is_speech(5000.0) is True
-        assert AudioProcessor.is_speech(100.0) is False
-        assert AudioProcessor.is_speech(1200.1) is True
-        assert AudioProcessor.is_speech(1199.9) is False
+    def test_hallucination_blocklist_dropped(self):
+        from app.audio import filter_whisper_hallucinations
+        result = {"text": "Thanks for watching.", "segments": [
+            {"text": "Thanks for watching.", "no_speech_prob": 0.1, "avg_logprob": -0.2},
+        ]}
+        assert filter_whisper_hallucinations(result) == ""
+
+    def test_high_no_speech_prob_segment_dropped(self):
+        from app.audio import filter_whisper_hallucinations
+        result = {"text": "noise", "segments": [
+            {"text": "noise", "no_speech_prob": 0.9, "avg_logprob": -0.1},
+        ]}
+        assert filter_whisper_hallucinations(result) == ""
+
+    def test_clean_segment_kept(self):
+        from app.audio import filter_whisper_hallucinations
+
+        class Seg:
+            def __init__(self, text, no_speech_prob, avg_logprob):
+                self.text = text
+                self.no_speech_prob = no_speech_prob
+                self.avg_logprob = avg_logprob
+
+        result = type("Verbose", (), {
+            "text": "Metformin mechanism",
+            "segments": [Seg("Metformin mechanism", 0.05, -0.2)],
+        })()
+        assert filter_whisper_hallucinations(result) == "Metformin mechanism"
+
+    def test_empty_after_filters(self):
+        from app.audio import filter_whisper_hallucinations
+        result = {"text": "", "segments": [
+            {"text": "Thanks for watching", "no_speech_prob": 0.8, "avg_logprob": -1.5},
+        ]}
+        assert filter_whisper_hallucinations(result) == ""
+
+    def test_audio_too_short_is_typed(self):
+        from app.audio import AudioTooShortError, MIN_AUDIO_BYTES
+        err = AudioTooShortError(12)
+        assert isinstance(err, ValueError)
+        assert err.size == 12
+        assert err.minimum == MIN_AUDIO_BYTES
+        assert "please speak" not in str(err).lower()
 
 
 class TestSafeSendHelpers:

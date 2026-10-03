@@ -28,60 +28,9 @@ from app.core.deps import (
     orchestrator,
     short_memory,
 )
+from app.core.greeting import is_general_greeting, should_skip_orchestrator
 
 logger = logging.getLogger(__name__)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Greeting / small-talk fast-path
-# ──────────────────────────────────────────────────────────────────────────────
-
-def is_general_greeting(text: str) -> bool:
-    """Returns True for greetings, social messages, and casual questions that
-    should skip the orchestrator and go straight to the friendly APP_AGENT."""
-    text_lower = text.strip().lower()
-
-    greeting_patterns = [
-        r"^(hello|hi|hey|howdy|greetings|good\s*(morning|afternoon|evening|night|day)).*$",
-        r"^(how are you|how('?s| is) it going|how('?s| are) things|what'?s up|sup|yo).*$",
-        r"^(nice to meet you|pleased to meet you|good to see you).*$",
-        r"^(thanks|thank you|thank you so much|many thanks|cheers|appreciate it).*$",
-        r"^(bye|goodbye|see you|take care|later|farewell|have a good one).*$",
-        r"^(what can you do|what do you do|who are you|what are you|tell me about yourself).*$",
-        r"^(help|i need help|can you help|can you assist).*$",
-        r"^(ok|okay|sure|cool|great|awesome|got it|understood|sounds good|perfect|nice).*$",
-        r"^(yes|no|maybe|yep|nope|yeah|nah)$",
-        r"^(welcome|you'?re welcome|np|no problem|no worries|anytime).*$",
-        r"^(sorry|excuse me|my bad|apologies|pardon).*$",
-        # Arabic
-        r"^(السلام عليكم|وعليكم السلام|أهلاً|أهلا|مرحباً|مرحبا|هلا|هلو|هاي).*$",
-        r"^(كيف حالك|كيف الحال|شلونك|عامل إيه|إيه أخبارك|شنو أخبارك|كيفك|شو أخبارك).*$",
-        r"^(صباح الخير|صباح النور|مساء الخير|مساء النور|تصبح على خير).*$",
-        r"^(شكراً|شكرا|شكرًا|اشكرك|ممنون|متشكر|جزاك الله خيراً).*$",
-        r"^(مع السلامة|باي|وداعاً|في أمان الله|إلى اللقاء|يسلمك).*$",
-        r"^(من أنت|ما هو|ماذا تفعل|ماذا تعرف|ما الذي يمكنك|ايش تقدر تسوي).*$",
-        r"^(نعم|لا|حسناً|تمام|موافق|صحيح|بالتأكيد|ماشي|اوكي).*$",
-        r"^(آسف|عذراً|سامحني|معليش|مع احترامي).*$",
-        r"^(سلام)$",
-    ]
-    for pattern in greeting_patterns:
-        if re.match(pattern, text_lower, re.IGNORECASE):
-            return True
-
-    scientific_keywords = [
-        "compound", "drug", "disease", "molecule", "chemical", "smiles", "admet",
-        "screening", "pathway", "protein", "target", "receptor", "ligand", "inhibitor",
-        "biomarker", "clinical", "genome", "dna", "rna", "enzyme", "pharmacology",
-        "مركب", "دواء", "مرض", "بروتين", "جين", "مسار", "علاج", "دراسة", "تحليل",
-    ]
-    if len(text_lower.split()) <= 3 and not any(kw in text_lower for kw in scientific_keywords):
-        return True
-
-    return False
-
-
-def should_skip_orchestrator(text: str) -> bool:
-    return is_general_greeting(text)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
