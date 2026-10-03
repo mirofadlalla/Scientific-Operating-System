@@ -358,7 +358,7 @@ class AudioProcessor:
                     oa_response = await self.openai_client.audio.speech.create(
                         model="tts-1",
                         voice=oa_voice,
-                        response_format="mp3",
+                        response_format="wav",
                         input=text,
                     )
                     if hasattr(oa_response, "content"):

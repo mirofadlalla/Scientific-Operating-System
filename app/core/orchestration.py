@@ -28,6 +28,7 @@ from app.core.deps import (
     orchestrator,
     short_memory,
 )
+from app.core.chem_text import pubchem_image_url
 from app.core.greeting import is_general_greeting, should_skip_orchestrator
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,7 @@ async def route_and_stream(
     user_id: str,
     allow_split: bool = True,
     store_memory: bool = True,
+    include_images: bool = True,
 ) -> AsyncIterator[str]:
     """
     Shared orchestration logic: routes a query through the expert agents and
@@ -242,6 +244,7 @@ async def route_and_stream(
                     sub_q, session_id, user_id,
                     allow_split=False,
                     store_memory=False,
+                    include_images=include_images,
                 ):
                     yield token
                     part_answer += token
@@ -327,27 +330,27 @@ async def route_and_stream(
         short_memory.add_message(session_id, "assistant", refusal)
         return
 
-    # ── Parallel agent calls ──────────────────────────────────────────────────
-    tasks, task_mapping = [], []
-    chemical_intents = {"CHEMICAL_SIMILARITY", "ADMET_ANALYSIS", "DRUG_REPURPOSING"}
-    has_chemical_data = entities.get("smiles") or entities.get("compound")
-    
-    # Non-blocking structure visualization image injection
-    chem_identifier = entities.get("smiles") or entities.get("compound")
-    if chem_identifier:
-        import urllib.parse
-        encoded_chem = urllib.parse.quote(chem_identifier.strip())
-        img_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/{encoded_chem}/PNG?image_size=300x300"
-        # Yield non-blocking markdown image string directly to stream
-        yield f"\n\n![Molecular Structure of {chem_identifier}]({img_url})\n\n"
+    # ── Parallel agent calls ───────────────────────────────────────────
+    from app.core.agent_dispatch import select_agents, build_agent_context
 
-    if (intent in chemical_intents or target_agent == "CHEMICAL_AGENT") and has_chemical_data:
-        tasks.append(chemical_agent.run(intent, entities))
-        task_mapping.append("CHEMICAL")
-    medical_intents = {"BIOMEDICAL_MECHANISM", "DRUG_REPURPOSING"}
-    if entities.get("disease") and (intent in medical_intents or target_agent == "MEDICAL_AGENT"):
-        tasks.append(medical_agent.run(intent, entities))
-        task_mapping.append("MEDICAL")
+    # ── Structure visualisation image (text channel only) ─────────────────
+    if include_images:
+        chem_identifier = entities.get("smiles") or entities.get("compound")
+        if chem_identifier:
+            img_url = pubchem_image_url(chem_identifier)
+            if img_url:
+                yield f"\n\n![Molecular Structure of {chem_identifier}]({img_url})\n\n"
+
+    # ── Select which agents to run ─────────────────────────────────
+    agent_keys = select_agents(intent, target_agent, entities)
+    tasks, task_mapping = [], []
+    for key in agent_keys:
+        if key == "CHEMICAL":
+            tasks.append(chemical_agent.run(intent, entities, user_query=text_input))
+            task_mapping.append("CHEMICAL")
+        elif key == "MEDICAL":
+            tasks.append(medical_agent.run(intent, entities, user_query=text_input))
+            task_mapping.append("MEDICAL")
 
     chemical_output = ""
     medical_output  = ""
@@ -403,11 +406,8 @@ async def route_and_stream(
                     logger.warning(f"long_memory.add_entry failed: {_lm_err}")
         return
 
-    # ── Synthesis via LLM ─────────────────────────────────────────────────────
-    if chemical_output or medical_output:
-        agent_raw_output = f"[Chem Data]: {chemical_output}\n[Bio Data]: {medical_output}".strip()
-    else:
-        agent_raw_output = "[App System Context]: Standard greeting or help request."
+    # ── Synthesis via LLM ───────────────────────────────────────────
+    agent_raw_output = build_agent_context(chemical_output, medical_output, intent)
 
     chat_history = short_memory.get_history(session_id, limit=12)
     is_arabic = bool(re.search(r"[\u0600-\u06FF]", text_input))

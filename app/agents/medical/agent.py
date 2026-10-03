@@ -11,7 +11,7 @@ class MedicalAgent:
         )
         self.model_name = getattr(settings, "REASONING_MODEL", settings.ORCHESTRATOR_MODEL)  # openai/gpt-oss-120b
 
-    async def run(self, intent: str, entities: dict) -> str:
+    async def run(self, intent: str, entities: dict, *, user_query: str | None = None) -> str:
         compound = entities.get("compound", "")
         disease  = entities.get("disease", "")
         smiles   = entities.get("smiles", "")
@@ -28,7 +28,23 @@ class MedicalAgent:
             "4. Do NOT output clinical advice, symptoms checklists, or generic health tips."
         )
 
-        if any(k in intent.lower() for k in ["repurpose", "screen"]):
+        if user_query:
+            # New path: user's question is the core; entities are supporting context.
+            entity_parts = []
+            if compound or smiles:
+                entity_parts.append(f"  - Compound/SMILES: {smiles if smiles else compound}")
+            if disease:
+                entity_parts.append(f"  - Disease/Pathology: {disease}")
+            entity_context = (
+                "\n".join(entity_parts)
+                if entity_parts
+                else "  (none extracted)"
+            )
+            user_prompt = (
+                f"{user_query}\n\n"
+                f"Extracted entities (may be empty):\n{entity_context}"
+            )
+        elif any(k in intent.lower() for k in ["repurpose", "screen"]):
             user_prompt = (
                 f"Analyze the therapeutic rationale for repurposing "
                 f"'{compound if compound else smiles}' to treat '{disease}'. "
@@ -55,4 +71,4 @@ class MedicalAgent:
             return f"[Biomedical Reasoning Engine Output]:\n{response.choices[0].message.content}"
 
         except Exception as e:
-            return f"[Medical Agent Error] Failed to generate biomedical validation: {str(e)}"
+            return f"[Medical Agent Error] Failed to generate biomedical validation: {str(e)}"

@@ -10,6 +10,7 @@ from app.audio import audio_processor
 from app.config import settings
 from app.core.exceptions import BadRequestError, InternalError
 from app.core.orchestration import route_and_stream
+from app.core.text_cleaning import clean_for_tts
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,10 @@ async def transcribe(audio_bytes: bytes, filename: Optional[str], audio_format: 
 async def synthesize(text: str, voice: str) -> bytes:
     if not text or not text.strip():
         raise BadRequestError("Text cannot be empty")
-    return await audio_processor.synthesize_speech(text, voice)
+    tts_text = clean_for_tts(text)
+    if not tts_text:
+        raise BadRequestError("Text contains no speakable content after cleaning")
+    return await audio_processor.synthesize_speech(tts_text, voice)
 
 
 async def agent_voice(
@@ -55,11 +59,15 @@ async def agent_voice(
     logger.info(f"[Audio Agent] Transcribed: {user_text}")
 
     full_response = ""
-    async for token in route_and_stream(user_text, session_id, user_id):
+    async for token in route_and_stream(user_text, session_id, user_id, include_images=False):
         full_response += token
 
     if not full_response:
         raise InternalError("Failed to generate response")
 
-    response_audio = await audio_processor.synthesize_speech(full_response, voice)
+    tts_text = clean_for_tts(full_response)
+    if not tts_text:
+        raise InternalError("Agent response contains no speakable content")
+
+    response_audio = await audio_processor.synthesize_speech(tts_text, voice)
     return response_audio, full_response
