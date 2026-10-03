@@ -6,7 +6,7 @@ GET /api/v1/metrics/requests
 """
 from fastapi import APIRouter
 
-from app import monitoring
+from app.controllers import monitoring_controller
 
 router = APIRouter(prefix="/metrics", tags=["Monitoring"])
 
@@ -14,10 +14,10 @@ router = APIRouter(prefix="/metrics", tags=["Monitoring"])
 @router.get("")
 async def get_metrics():
     """Full system metrics snapshot — consumed by the dashboard."""
-    return monitoring.get_snapshot()
+    return monitoring_controller.metrics()
 
 
 @router.get("/requests")
 async def get_recent_requests(limit: int = 50):
     """Return the last N request log entries."""
-    return monitoring.get_recent_requests(limit=min(limit, 200))
+    return monitoring_controller.recent_requests(limit)

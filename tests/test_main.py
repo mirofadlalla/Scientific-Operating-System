@@ -17,7 +17,8 @@ from app.orchestrator.prompts import (
 from app.core.orchestration import COMBINED_ORCHESTRATOR_PROMPT
 from app.memory.short_term import ShortTermMemory
 from app.memory.long_term import LongTermMemory
-from app.agents.chemical.agent import _fmt, ChemicalAgent
+from app.agents.chemical.agent import ChemicalAgent
+from app.agents.chemical.mcp.chemical_server import _fmt
 
 
 @pytest.fixture

@@ -9,7 +9,10 @@ in app/core/ and app/api/.  All business logic lives elsewhere:
   app/core/orchestration.py  ← routing, prompts, composite detection
   app/core/lifespan.py       ← startup / shutdown
   app/core/middleware.py     ← ReadinessMiddleware, MonitoringMiddleware
-  app/api/v1/               ← versioned route handlers
+  app/api/v1/               ← routes (path + dependencies only)
+  app/controllers/          ← parse request, call service, shape response
+  app/services/             ← business logic
+  app/repositories/         ← storage access (Redis / in-memory)
   app/schemas/              ← Pydantic models
 """
 import time
@@ -21,6 +24,7 @@ from fastapi.responses import RedirectResponse
 from app.core.lifespan   import lifespan
 from app.core.middleware  import MonitoringMiddleware, ReadinessMiddleware
 from app.api.v1.router   import api_router
+from app.core.exceptions import AppError, app_error_handler
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Application
@@ -48,6 +52,9 @@ app.add_middleware(
 )
 app.add_middleware(ReadinessMiddleware)
 app.add_middleware(MonitoringMiddleware)
+
+# ── Domain errors → HTTP responses ────────────────────────────────────────────
+app.add_exception_handler(AppError, app_error_handler)
 
 # ── Versioned API routes ──────────────────────────────────────────────────────
 app.include_router(api_router)

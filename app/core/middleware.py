@@ -43,6 +43,7 @@ class ReadinessMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
 
+        # BaseHTTPMiddleware is open then colsed but WebSocket upgrade requests must always be forwarded connactions lawys opened — BaseHTTPMiddleware
         # WebSocket upgrade requests must always be forwarded — BaseHTTPMiddleware
         # cannot return a proper WS handshake response, so attempting to block
         # them would crash the connection silently.
