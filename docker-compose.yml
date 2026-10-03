@@ -1,14 +1,55 @@
-version: '3.8'
+# Backend + the services it depends on. Frontend is deployed separately (Vercel).
+#   cp .env.example .env   # add GROQ_API_KEY, SECRET_KEY, MONGODB_URI …
+#   docker compose up --build
+name: scientific-os
 
 services:
-  # Redis — Message queue and cache backend
+  backend:
+    build:
+      context: .
+      target: runtime
+      args:
+        PRELOAD_MODEL: ${PRELOAD_MODEL:-1}          # 0 = smaller image, model downloads on first start
+        EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-large-instruct}
+    image: scientific-os-backend:latest
+    container_name: scientific-os-backend
+    ports:
+      - "${HOST_PORT:-7860}:7860"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Docker-network wiring — these win over anything in .env
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      WEAVIATE_HOST: weaviate
+      WEAVIATE_PORT: 8080
+      WEAVIATE_GRPC_PORT: 50051
+      # Chemical agent → MCP server started by docker/entrypoint.sh in this container
+      START_MCP_SERVER: ${START_MCP_SERVER:-1}
+    volumes:
+      - backend_data:/data                           # persistent RAG index
+      # Only if you build with PRELOAD_MODEL=0, keep the model across recreations:
+      # - hf_cache:/opt/hf
+    depends_on:
+      redis:
+        condition: service_healthy
+      weaviate:
+        condition: service_healthy
+    networks: [scientific-os-network]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    restart: unless-stopped
+    # The e5-large embedding model needs roughly 3 GB of RAM. Uncomment to cap:
+    # mem_limit: 4g
+
   redis:
     image: redis:7-alpine
     container_name: scientific-os-redis
     ports:
-      - "6379:6379"
-    networks:
-      - scientific-os-network
+      - "127.0.0.1:6379:6379"                        # localhost only
+    networks: [scientific-os-network]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -16,83 +57,27 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Weaviate — Vector database for RAG
   weaviate:
-    image: semitechnologies/weaviate:latest
+    # Pin this to the version your existing weaviate_data volume was created with:
+    #   WEAVIATE_VERSION=1.xx.y docker compose up
+    image: semitechnologies/weaviate:${WEAVIATE_VERSION:-latest}
     container_name: scientific-os-weaviate
     ports:
-      - "8080:8080"
-      - "50051:50051"
-    networks:
-      - scientific-os-network
+      - "127.0.0.1:8080:8080"                        # localhost only (anonymous access is on)
+      - "127.0.0.1:50051:50051"
+    networks: [scientific-os-network]
     environment:
       QUERY_DEFAULTS_LIMIT: 25
       AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
-      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
     volumes:
       - weaviate_data:/var/lib/weaviate
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/.well-known/ready"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/v1/.well-known/ready"]
       interval: 10s
       timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  scientific-os:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: scientific-os-app
-    ports:
-      - "7860:7860"  # Main application port
-      - "8000:8000"  # Alternative Uvicorn port if needed
-    environment:
-      # Groq LLM Configuration
-      GROQ_API_KEY: ${GROQ_API_KEY}
-      GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
-      
-      # External Microservices
-      ADMET_AI_URL: ${ADMET_AI_URL:-https://shdwRow-ailixir-admet.hf.space}
-      CHEMICAL_AI_URL: ${CHEMICAL_AI_URL:-https://RottenShadow-ailixir-chemical-rag.hf.space}
-      DRUG_REPURPOSING_URL: ${DRUG_REPURPOSING_URL:-https://RottenShadow-ailixir-drug-repurposing.hf.space}
-      GENERATION_SERVICE_URL: ${GENERATION_SERVICE_URL:-https://shdwRow-ailixir-generation.hf.space}
-      
-      # Redis Configuration (Docker networking)
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_DB: 0
-      
-      # Weaviate Configuration (Docker networking)
-      WEAVIATE_HOST: weaviate
-      WEAVIATE_PORT: 8080
-      WEAVIATE_GRPC_PORT: 50051
-      
-      # Python Runtime Configuration
-      PYTHONUNBUFFERED: "1"
-      PYTHONDONTWRITEBYTECODE: "1"
-    
-    depends_on:
-      redis:
-        condition: service_healthy
-      weaviate:
-        condition: service_healthy
-    
-    # volumes:
-    #   # Optional: Mount source code for development mode
-    #   # - .:/code
-    
-    networks:
-      - scientific-os-network
-    
-    # Health check to verify the service is running
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7860/"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    
-    # Restart policy
+      retries: 10
+      start_period: 15s
     restart: unless-stopped
 
 networks:
@@ -100,5 +85,6 @@ networks:
     driver: bridge
 
 volumes:
+  backend_data:
   weaviate_data:
-    driver: local
+  # hf_cache:

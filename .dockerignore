@@ -1,16 +1,35 @@
-# Ignore local virtual environments
-.venv/
-venv/
-env/
-
-# Ignore Python cache and compiled files
-**/__pycache__/
-**/*.pyc
-**/*.pyo
-**/*.pyd
-
-# Ignore local environment variables and git configurations
-.env
+# ── VCS / CI ────────────────────────────────────────────────────────────────
 .git
 .gitignore
-README.md
+.github
+
+# ── Secrets & local state — never bake these into an image ──────────────────
+.env
+.env.*
+app/memory/long_term_store.json
+app/agents/customer_support/ai-lixir-rag-system/storage/*
+
+# ── Python junk ─────────────────────────────────────────────────────────────
+.venv
+venv
+env
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+*.log
+
+# ── Not needed at runtime (the Dockerfile only COPYs requirements.txt, app/, docker/) ─
+tests
+scripts
+requirements.in
+requirements-dev.txt
+pyproject.toml
+uv.lock
+Dockerfile
+docker-compose.yml
+.dockerignore
+app/Dockerfile
+app/.dockerignore
+README*.md

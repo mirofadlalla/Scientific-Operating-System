@@ -1,33 +1,128 @@
-# Use an official lightweight Python base image
-FROM python:3.10-slim
+# syntax=docker/dockerfile:1.7
+# ═════════════════════════════════════════════════════════════════════════════
+#  AI-lixir Scientific OS — backend image (FastAPI + MCP chemical server)
+#
+#  Stages
+#    builder      venv with CPU-only torch + the pinned requirements.txt
+#    model-cache  (optional) pre-downloads the embedding model into /opt/hf
+#    runtime      slim, non-root image: venv + model cache + app code only
+#
+#  Build:   docker build -t scientific-os-backend .
+#  Slim:    docker build --build-arg PRELOAD_MODEL=0 -t scientific-os-backend .
+#           (≈2 GB smaller, but the first start downloads the model — 2-3 min)
+# ═════════════════════════════════════════════════════════════════════════════
+ARG PYTHON_VERSION=3.11
 
-# Set system environment variables to optimize Python inside Docker
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 — builder: resolve nothing, just install exactly what is pinned
+# ─────────────────────────────────────────────────────────────────────────────
+FROM python:${PYTHON_VERSION}-slim AS builder
+
+ARG UV_VERSION=0.11.7
+# torch is NOT in requirements.txt on purpose: PyPI's default Linux wheel drags in
+# ~3 GB of CUDA libraries that a CPU-only Groq-backed service never uses.
+ARG TORCH_SPEC="torch>=2.4,<3"
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
+
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_DOWNLOADS=never \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH
+
+# No compiler / apt packages needed: every pinned dependency ships a wheel for
+# linux x86_64 and aarch64, and --only-binary below makes that a hard guarantee.
+RUN pip install --no-cache-dir uv==${UV_VERSION} && uv venv /opt/venv
+
+# Layer A — CPU torch. Changes rarely, so it stays cached across code/dep edits.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --index-url "${TORCH_INDEX}" "${TORCH_SPEC}"
+
+# Layer B — everything else, exactly as pinned (no resolution happens here).
+#   --no-deps       the lock is complete; nothing new may sneak in
+#   --only-binary   never compile from source
+#   uv pip check    build FAILS if any package conflicts (incl. against torch)
+COPY requirements.txt /tmp/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-deps --only-binary :all: -r /tmp/requirements.txt \
+ && uv pip check
+
+# Bake llama-index's import-time downloads (NLTK punkt, tiktoken BPE) into the
+# venv so the running container never needs the network for them.
+RUN python -c "import llama_index.core"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — model-cache: embedding model baked in (skippable)
+# ─────────────────────────────────────────────────────────────────────────────
+FROM builder AS model-cache
+
+ARG PRELOAD_MODEL=1
+# Keep in sync with EMBEDDING_MODEL in app/config.py.
+ARG EMBEDDING_MODEL=intfloat/multilingual-e5-large-instruct
+ENV HF_HOME=/opt/hf
+
+RUN mkdir -p "${HF_HOME}" \
+ && if [ "${PRELOAD_MODEL}" = "1" ]; then \
+      python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['EMBEDDING_MODEL'])"; \
+    fi
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3 — runtime
+# ─────────────────────────────────────────────────────────────────────────────
+FROM python:${PYTHON_VERSION}-slim AS runtime
+
+# uid 1000 matches what Hugging Face Spaces runs containers as.
+ARG APP_UID=1000
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH \
+    HF_HOME=/opt/hf \
+    TOKENIZERS_PARALLELISM=false \
     PORT=7860
 
-# Set the working directory inside the container
+# tini = proper PID 1: reaps zombies (the app spawns an RQ worker subprocess and
+# the entrypoint runs the MCP server) and forwards SIGTERM for clean shutdown.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tini \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --uid ${APP_UID} --create-home --shell /usr/sbin/nologin app \
+ && mkdir -p /data /code \
+ && chown app:app /data /code
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=model-cache --chown=${APP_UID}:${APP_UID} /opt/hf /opt/hf
+
 WORKDIR /code
+COPY app ./app
+COPY docker/entrypoint.sh  /usr/local/bin/entrypoint.sh
+COPY docker/healthcheck.py /usr/local/bin/healthcheck.py
 
-# Install system-level dependencies if required by httpx or asyncio packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Paths the app writes to at runtime (see .dockerignore: no local state is baked in):
+#   /data                                    persistent RAG index (HF Spaces convention)
+#   app/memory                               long_term_store.json fallback
+#   …/ai-lixir-rag-system/storage            RAG index fallback when /data is unavailable
+RUN chmod +x /usr/local/bin/entrypoint.sh \
+ && python -m compileall -q app \
+ && mkdir -p app/agents/customer_support/ai-lixir-rag-system/storage \
+ && chown -R app:app app/memory app/agents/customer_support/ai-lixir-rag-system/storage
 
-# Copy the requirements file first to utilize Docker layer caching
-COPY requirements.txt .
-
-# Install Python packages defined in requirements.txt
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
-
-# Copy the entire application source code into the container workdir
-COPY . .
-
-# Hugging Face Spaces runs on port 7860 by default, expose it
+USER app
 EXPOSE 7860
 
-# Run the FastAPI core app using Uvicorn on host 0.0.0.0 and port 7860
-# Using main:app to execute the root-level main.py entry point
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+# /health bypasses ReadinessMiddleware, so it is green as soon as the API is up
+# (even while the RAG engine is still warming). start-period covers the slow
+# llama-index / torch imports on first boot.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+    CMD ["python", "/usr/local/bin/healthcheck.py"]
+
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/entrypoint.sh"]
+
+# Single worker on purpose: the app keeps in-memory state, spawns its own RQ
+# worker in the lifespan hook, and each worker would load the embedding model.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-7860}"]

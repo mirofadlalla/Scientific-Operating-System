@@ -144,7 +144,7 @@ def mock_tts_chunked():
 @pytest.fixture
 def mock_orchestration():
     """Mock the orchestration to stream simple tokens."""
-    with patch("app.api.v1.chat.route_and_stream", side_effect=mock_route_and_stream):
+    with patch("app.services.voice_service.route_and_stream", side_effect=mock_route_and_stream):
         yield
 
 
@@ -443,11 +443,11 @@ class TestSafeSendHelpers:
     @pytest.mark.asyncio
     async def test_safe_send_json_on_closed(self):
         """_safe_send_json should return False on a closed session."""
-        from app.api.v1.chat import _safe_send_json, VoiceSession
+        from app.services.voice_session import VoiceSession
         mock_ws = MagicMock()
         session = VoiceSession(mock_ws, "test")
         session._closed = True
-        result = await _safe_send_json(mock_ws, {"type": "test"}, session)
+        result = await session.send_json({"type": "test"})
         assert result is False
 
 
@@ -466,7 +466,7 @@ class TestOrchestrateEndpoint:
             yield "Hi "
             yield "there!"
 
-        with patch("app.api.v1.chat.route_and_stream", side_effect=mock_gen):
+        with patch("app.services.chat_service.route_and_stream", side_effect=mock_gen):
             response = client.post("/api/v1/orchestrate", json=payload)
 
         assert response.status_code == 200

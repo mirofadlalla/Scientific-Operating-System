@@ -18,7 +18,7 @@ class ShortTermMemory:
 		with self._lock:
 			self._store[session_id].append({"role": role, "content": content})
 
-	def get_history(self, session_id: str, limit: int = 10) -> List[Dict[str, str]]:
+	def get_history(self, session_id: str, limit: int = 5) -> List[Dict[str, str]]:
 		with self._lock:
 			return list(self._store.get(session_id, []))[-limit:]
 

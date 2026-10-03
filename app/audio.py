@@ -6,7 +6,6 @@ Audio Processing Module - STT (Groq Whisper) and TTS capabilities for agents
 - Sentence-chunked TTS: yields audio per sentence for low-latency playback
 """
 import sys
-import io as _io
 # Force stdout/stderr to UTF-8 on Windows so Unicode in log messages never crashes خلي الـ stdout يكتب UTF-8.
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')

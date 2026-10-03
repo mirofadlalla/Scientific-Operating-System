@@ -70,7 +70,7 @@ class TestOrchestrateEndpoint:
             yield "inhibitor "
             yield "result."
 
-        with patch("app.api.v1.chat.route_and_stream", side_effect=mock_token_generator):
+        with patch("app.services.chat_service.route_and_stream", side_effect=mock_token_generator):
             response = client.post("/api/v1/orchestrate", json=payload)
 
         assert response.status_code == 200
