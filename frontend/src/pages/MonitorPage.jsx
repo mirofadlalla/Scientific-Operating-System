@@ -33,7 +33,7 @@ function AgentChart({ data }) {
   const colors = ['#3ecfcf', '#6366f1', '#f59e0b', '#22c55e'];
   const chartData = agents.map((a, i) => ({
     name: a.replace('_AGENT', ''),
-    calls: data?.[a]?.total_calls || 0,
+    calls: data?.distribution?.[a]?.count || 0,
     fill: colors[i],
   }));
   return (
@@ -65,7 +65,7 @@ function RequestsChart({ recentRequests }) {
     const from = now - (i + 1) * windowMs;
     const to   = now - i * windowMs;
     const count = recentRequests.filter(r => {
-      const ts = (r.timestamp || 0) * 1000;
+      const ts = r.ts ? Date.parse(r.ts) : 0;
       return ts >= from && ts < to;
     }).length;
     grouped.push({ label: `-${(i + 1) * 30}s`, count });
@@ -98,7 +98,7 @@ function LatencyChart({ recentRequests }) {
   const points = recentRequests.slice(-30).map((r, i) => ({
     i,
     latency: Math.round(r.latency_ms || 0),
-    endpoint: (r.path || '').replace(/^\//, '').slice(0, 14),
+    endpoint: (r.endpoint || '').replace(/^\//, '').slice(0, 14),
   }));
   return (
     <div className="chart-card">
@@ -121,7 +121,7 @@ function LatencyChart({ recentRequests }) {
 function StatusChart({ recentRequests }) {
   const counts = {};
   recentRequests.forEach(r => {
-    const s = String(r.status_code || '?');
+    const s = String(r.status || '?');
     counts[s] = (counts[s] || 0) + 1;
   });
   const data = Object.entries(counts).map(([code, count]) => ({ code, count }));
@@ -191,9 +191,7 @@ function TokenChart({ snapshot }) {
 
 // ── Error rate radial ─────────────────────────────────────────────────────────
 function ErrorRateRadial({ snapshot }) {
-  const total  = snapshot?.requests?.total || 1;
-  const errors = snapshot?.requests?.errors || 0;
-  const rate   = Math.round((errors / total) * 100);
+  const rate   = Math.min(100, Math.round(snapshot?.requests?.error_rate || 0));
   const data   = [{ name: 'Errors', value: rate, fill: '#ef4444' }, { name: 'OK', value: 100 - rate, fill: 'rgba(34,197,94,.2)' }];
   return (
     <div className="chart-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
@@ -229,8 +227,8 @@ export default function MonitorPage() {
       setSnapshot(snap);
       setRecentReqs(Array.isArray(reqs) ? reqs : []);
       setLastUpdated(new Date().toLocaleTimeString());
-      if (snap?.server?.uptime_seconds != null) {
-        const s = Math.round(snap.server.uptime_seconds);
+      if (snap?.uptime?.seconds != null) {
+        const s = Math.round(snap.uptime.seconds);
         const h = Math.floor(s / 3600);
         const m = Math.floor((s % 3600) / 60);
         setUptime(`${h}h ${m}m`);
@@ -249,10 +247,10 @@ export default function MonitorPage() {
   }, [fetchData]);
 
   const totalReq  = snapshot?.requests?.total || 0;
-  const totalErr  = snapshot?.requests?.errors || 0;
+  const totalErr  = snapshot?.errors?.total || 0;
   const successRate = totalReq ? Math.round(((totalReq - totalErr) / totalReq) * 100) : 100;
-  const avgLatency  = snapshot?.requests?.avg_latency_ms != null
-    ? Math.round(snapshot.requests.avg_latency_ms) + ' ms'
+  const avgLatency  = snapshot?.latency?.count
+    ? Math.round(snapshot.latency.avg) + ' ms'
     : '– ms';
 
   return (
@@ -319,18 +317,14 @@ export default function MonitorPage() {
               <div className="chart-title">Out-of-Domain</div>
               <div className="chart-sub">Rejected queries</div>
               <div style={{ padding: '16px 0', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {(() => {
-                  const ood = snapshot?.out_of_domain || {};
-                  return Object.entries(ood).slice(0, 8).map(([reason, count]) => (
-                    <div key={reason} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
-                      <span style={{ color: 'var(--text-sec)', fontFamily: 'var(--mono)', fontSize: 11 }} title={reason}>
-                        {reason.slice(0, 40) || '(unknown)'}
-                      </span>
-                      <span style={{ color: 'var(--accent)', fontFamily: 'var(--mono)', fontWeight: 700 }}>{count}</span>
-                    </div>
-                  ));
-                })()}
-                {!Object.keys(snapshot?.out_of_domain || {}).length && (
+                {(snapshot?.requests?.out_of_domain || 0) > 0 ? (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13 }}>
+                    <span style={{ color: 'var(--text-sec)', fontFamily: 'var(--mono)', fontSize: 11 }}>Rejected queries</span>
+                    <span style={{ color: 'var(--accent)', fontFamily: 'var(--mono)', fontWeight: 700 }}>
+                      {snapshot.requests.out_of_domain}
+                    </span>
+                  </div>
+                ) : (
                   <div style={{ color: 'var(--green)', fontFamily: 'var(--mono)', fontSize: 12 }}>✅ No out-of-domain queries</div>
                 )}
               </div>
@@ -354,14 +348,14 @@ export default function MonitorPage() {
                 <tbody>
                   {recentReqs.slice(-20).reverse().map((r, i) => (
                     <tr key={i}>
-                      <td style={{ fontFamily: 'var(--mono)' }}>{r.path || '–'}</td>
+                      <td style={{ fontFamily: 'var(--mono)' }}>{r.endpoint || '–'}</td>
                       <td>{r.method || '–'}</td>
-                      <td className={r.status_code < 400 ? 'status-ok' : 'status-err'}>
-                        {r.status_code}
+                      <td className={r.status < 400 ? 'status-ok' : 'status-err'}>
+                        {r.status}
                       </td>
                       <td style={{ fontFamily: 'var(--mono)' }}>{Math.round(r.latency_ms || 0)}ms</td>
                       <td style={{ color: 'var(--text-muted)', fontFamily: 'var(--mono)', fontSize: 11 }}>
-                        {r.timestamp ? new Date(r.timestamp * 1000).toLocaleTimeString() : '–'}
+                        {r.ts ? new Date(r.ts).toLocaleTimeString() : '–'}
                       </td>
                     </tr>
                   ))}

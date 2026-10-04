@@ -50,6 +50,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --no-deps --only-binary :all: -r /tmp/requirements.txt \
  && uv pip check
 
+# Guard: the image must be CPU-only. Fails the build if torch is a CUDA build or
+# if any NVIDIA / triton wheel slipped into the venv.
+RUN python - <<'PY'
+import importlib.metadata as md, sys, torch
+bad = sorted(d.metadata["Name"] for d in md.distributions()
+             if d.metadata["Name"].lower().startswith(("nvidia-", "cuda-", "triton")))
+if torch.version.cuda is not None or bad:
+    sys.exit(f"Not CPU-only: torch.version.cuda={torch.version.cuda!r}, GPU packages={bad}")
+print("CPU-only OK:", torch.__version__)
+PY
+
 # Bake llama-index's import-time downloads (NLTK punkt, tiktoken BPE) into the
 # venv so the running container never needs the network for them.
 RUN python -c "import llama_index.core"

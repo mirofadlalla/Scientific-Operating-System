@@ -1,105 +1,153 @@
-# name: CI/CD Pipeline
+name: CI
 
-# on:
-#   push:
-#     branches:
-#       - main
-#       - develop
-#   pull_request:
-#     branches:
-#       - main
-#       - develop
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
 
-# jobs:
-#   test:
-#     runs-on: ubuntu-latest
-    
-#     strategy:
-#       matrix:
-#         python-version: ['3.10']
-    
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-      
-#       - name: Set up Python ${{ matrix.python-version }}
-#         uses: actions/setup-python@v4
-#         with:
-#           python-version: ${{ matrix.python-version }}
-#           cache: 'pip'
-      
-#       - name: Install dependencies
-#         run: |
-#           python -m pip install --upgrade pip
-#           pip install -r requirements.txt
-#           pip install pytest httpx
-      
-#       - name: Run pytest tests
-#         run: |
-#           pytest tests/ -v --tb=short
-#         env:
-#           # Set environment variables for testing (use defaults from config)
-#           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY || '' }}
-#           ADMET_AI_URL: https://shdwRow-ailixir-admet.hf.space
-#           CHEMICAL_AI_URL: https://RottenShadow-ailixir-chemical-rag.hf.space
-#           DRUG_REPURPOSING_URL: https://RottenShadow-ailixir-drug-repurposing.hf.space
-#           GENERATION_SERVICE_URL: https://shdwRow-ailixir-generation.hf.space
+# Cancel superseded runs on the same branch/PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
-#   build:
-#     runs-on: ubuntu-latest
-#     needs: test
-    
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-      
-#       - name: Set up Docker Buildx
-#         uses: docker/setup-buildx-action@v3
-      
-#       - name: Build Docker image
-#         uses: docker/build-push-action@v5
-#         with:
-#           context: .
-#           file: app/Dockerfile
-#           push: false
-#           tags: scientific-os:latest
-      
-#       - name: Verify Docker build
-#         run: |
-#           echo "Docker image built successfully!"
-#           docker build -t scientific-os:latest -f app/Dockerfile .
-      
-#       - name: Run container health check (optional)
-#         run: |
-#           docker run --rm --entrypoint python scientific-os:latest -c "import app.main; print('✓ Application imports successful')"
+permissions:
+  contents: read
 
-#   lint:
-#     runs-on: ubuntu-latest
-    
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-      
-#       - name: Set up Python
-#         uses: actions/setup-python@v4
-#         with:
-#           python-version: '3.10'
-#           cache: 'pip'
-      
-#       - name: Install development dependencies
-#         run: |
-#           python -m pip install --upgrade pip
-#           pip install -r requirements.txt
-#           pip install flake8 black isort
-      
-#       - name: Check code formatting with black
-#         run: black --check app/ tests/ --line-length 120
-#         continue-on-error: true
-      
-#       - name: Sort imports with isort
-#         run: isort --check-only app/ tests/
-#         continue-on-error: true
-      
-#       - name: Lint with flake8
-#         run: flake8 app/ tests/ --max-line-length=120 --ignore=E501,W503
-#         continue-on-error: true
+jobs:
+  backend:
+    name: Backend tests (Python 3.11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Same installer the Dockerfile uses (uv), cached on requirements.txt.
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
+
+      # torch is intentionally NOT in requirements.txt (see
+      # scripts/compile-requirements.sh). Tests don't need it: sentence-transformers
+      # and the HF embedding classes are imported lazily inside the providers.
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv pip install --no-deps --only-binary :all: -r requirements.txt
+          uv pip check
+          uv pip install pytest pytest-asyncio
+
+      # conftest.py sets dummy GROQ_API_KEY / SECRET_KEY / service URLs, and the
+      # tests mock Redis, Weaviate and the Groq API, so no secrets or services
+      # are needed here.
+      # Includes tests/test_frontend_contract.py, which checks that every API path
+      # the React app calls exists on the backend and that the /metrics payload has
+      # the keys the Monitor page reads.
+      - name: Run tests
+        run: uv run --no-sync pytest tests/ -v --tb=short
+
+  frontend:
+    name: Frontend lint & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # Vite 8 needs Node >= 20.19 / 22.12.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [backend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Root Dockerfile (runtime target), same as docker-compose.yml.
+      # PRELOAD_MODEL stays 0 so CI doesn't download the ~560 MB embedding model.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: runtime
+          load: true
+          push: false
+          tags: scientific-os-backend:ci
+          build-args: |
+            PRELOAD_MODEL=0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The Dockerfile also asserts this at build time; this re-checks the final
+      # runtime image so a regression can't slip in through another stage.
+      - name: Verify image is CPU-only
+        run: |
+          docker run --rm --entrypoint python scientific-os-backend:ci - <<'PY'
+          import importlib.metadata as md, sys, torch
+          bad = sorted(d.metadata["Name"] for d in md.distributions()
+                       if d.metadata["Name"].lower().startswith(("nvidia-", "cuda-", "triton")))
+          print("torch", torch.__version__, "| cuda:", torch.version.cuda, "| gpu pkgs:", bad)
+          sys.exit(1 if (torch.version.cuda is not None or bad or torch.cuda.is_available()) else 0)
+          PY
+          docker image inspect scientific-os-backend:ci --format 'image size: {{.Size}} bytes'
+
+      # Boots the real image and hits the endpoints the frontend depends on,
+      # including a CORS preflight from a browser origin.
+      - name: Container integration smoke test
+        env:
+          ORIGIN: https://my-app.vercel.app
+        run: |
+          # jina + dummy key: avoids downloading the ~2 GB HF embedding model in CI.
+          docker run -d --name backend -p 7860:7860 \
+            -e GROQ_API_KEY=ci-dummy \
+            -e SECRET_KEY=ci-dummy-secret-key-at-least-32-bytes-long \
+            -e EMBEDDING_PROVIDER=jina -e JINA_API_KEY=ci-dummy \
+            -e START_MCP_SERVER=0 \
+            scientific-os-backend:ci
+
+          for i in $(seq 1 60); do
+            curl -fsS http://localhost:7860/health && break
+            sleep 2
+          done
+          curl -fsS http://localhost:7860/health
+
+          curl -fsS http://localhost:7860/api/v1/metrics | python -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          for k in ('uptime', 'requests', 'errors', 'latency', 'agents', 'tokens'):
+              assert k in d, f'/metrics missing {k}'
+          "
+          curl -fsS "http://localhost:7860/api/v1/metrics/requests?limit=5" > /dev/null
+          curl -fsS http://localhost:7860/api/v1/rag/status > /dev/null
+
+          # CORS preflight, as sent by the browser for the frontend's JSON POSTs
+          curl -fsS -D - -o /dev/null -X OPTIONS http://localhost:7860/api/v1/orchestrate \
+            -H "Origin: $ORIGIN" \
+            -H "Access-Control-Request-Method: POST" \
+            -H "Access-Control-Request-Headers: content-type" \
+            | tee /dev/stderr | grep -iq '^access-control-allow-origin:'
+
+      - name: Container logs
+        if: failure()
+        run: docker logs backend || true
