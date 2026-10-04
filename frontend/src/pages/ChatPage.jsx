@@ -735,14 +735,37 @@ export default function ChatPage() {
     };
   }, [connectWS]);
 
-  // Keepalive ping every 20 s
+  // ── Keepalive pings ──────────────────────────────────────────────────────────
+  // Tablets and mobile browsers throttle setInterval to ≥60 s when the tab is
+  // backgrounded (Page Visibility API throttling in Safari/Chrome).  A 20 s
+  // interval therefore misses the 120 s server timeout window on a sleeping tablet.
+  //
+  // Fix: use a 10 s interval (gives 12 pings before the 120 s deadline) AND send
+  // an immediate ping on visibilitychange so that the connection is refreshed the
+  // moment the user lifts the tablet again.
   useEffect(() => {
-    const iv = setInterval(() => {
+    const sendPing = () => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'ping' }));
       }
-    }, 20000);
-    return () => clearInterval(iv);
+    };
+
+    // Periodic keepalive every 10 s
+    const iv = setInterval(sendPing, 10000);
+
+    // Immediate ping when tab regains focus (tablet wake / app switch back)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('[WS] Tab became visible — sending keepalive ping');
+        sendPing();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   // ── Stop voice completely ──────────────────────────────────────────────────

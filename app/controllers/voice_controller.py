@@ -35,7 +35,7 @@ from app.services.voice_session import VoiceSession
 
 logger = logging.getLogger(__name__)
 
-IDLE_TIMEOUT_SECONDS = 120.0
+IDLE_TIMEOUT_SECONDS = 300.0   # tablets throttle timers; 5 min is safe with 10 s pings
 
 
 # ── Message handlers ──────────────────────────────────────────────────────────
@@ -98,10 +98,23 @@ async def handle_voice_channel(websocket: WebSocket, session_id: str) -> None:
     try:
         while True:
             try:
-                raw = await asyncio.wait_for(websocket.receive_text(), timeout=IDLE_TIMEOUT_SECONDS)
+                # Use receive() instead of receive_text() so that unexpected
+                # binary frames from tablets don't crash the loop.
+                frame = await asyncio.wait_for(websocket.receive(), timeout=IDLE_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 logger.info(f"[WS] Session {session_id} timed out ({IDLE_TIMEOUT_SECONDS:.0f}s no message)")
                 break
+
+            # Text frames carry JSON control messages
+            if "text" in frame:
+                raw = frame["text"]
+            elif "bytes" in frame:
+                # Unexpected raw binary from tablet — ignore gracefully
+                logger.debug(f"[WS] Received unexpected binary frame ({len(frame['bytes'])} bytes), ignoring")
+                continue
+            else:
+                # WebSocketDisconnect or close frame
+                raise WebSocketDisconnect()
 
             msg = json.loads(raw)
             handler = _HANDLERS.get(msg.get("type"))
