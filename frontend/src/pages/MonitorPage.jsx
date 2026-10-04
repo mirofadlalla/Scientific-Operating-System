@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   LineChart, Line, BarChart, Bar, AreaChart, Area,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  RadialBarChart, RadialBar, Cell, Legend
+  RadialBarChart, RadialBar, Cell
 } from 'recharts';
 import { API_BASE } from '../config';
 

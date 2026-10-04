@@ -10,17 +10,6 @@ const STEP_LABELS = {
   reload: '🔄  Reloading query engine',
 };
 
-const STATUS_TO_STEP = {
-  pending:   null,
-  reading:   'upload',
-  chunking:  'chunk',
-  embedding: 'embed',
-  indexing:  'index',
-  reloading: 'reload',
-  completed: 'done',
-  failed:    'failed',
-};
-
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── Login Gate ───────────────────────────────────────────────────────────────
@@ -163,15 +152,17 @@ export default function RagPage() {
     setLoggedInUser(null);
   };
 
-  // Show login gate if not authenticated
-  if (!token) return <LoginGate onLogin={handleLogin} />;
-
-  // Fetch KB status on mount and every 30s
+  // Fetch KB status once logged in, then every 30s.
+  // (Hooks must run on every render, so this sits above the login-gate early return.)
   useEffect(() => {
+    if (!token) return undefined;
     fetchKBStatus();
     const id = setInterval(fetchKBStatus, 30_000);
     return () => clearInterval(id);
-  }, []);
+  }, [token]);
+
+  // Show login gate if not authenticated
+  if (!token) return <LoginGate onLogin={handleLogin} />;
 
   const fetchKBStatus = async () => {
     try {
@@ -237,7 +228,6 @@ export default function RagPage() {
         await sleep(600);
         const sr   = await fetch(`${API_BASE}/rag/ingest/status/${jobId}`);
         const data = await sr.json();
-        const step = STATUS_TO_STEP[data.status];
 
         if (data.status === 'pending' || data.status === 'reading') {
           setSteps({ upload: 'active' });

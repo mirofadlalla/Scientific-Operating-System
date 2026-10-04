@@ -368,7 +368,7 @@ export default function ChatPage() {
                   wsRef.current.send(JSON.stringify({ type: 'audio_end', format: ext }));
                 }
               };
-              try { mr.stop(); } catch (_) {}
+              try { mr.stop(); } catch {}
               setVoiceSpeaking(false);
               setVoiceProcessing(true);
               setVoiceStatus('Transcribing speech…');
@@ -579,7 +579,7 @@ export default function ChatPage() {
       // ── Fallback energy VAD path ───────────────────────────────────────
       console.warn('[VAD] Using energy-based fallback VAD');
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-        try { mediaRecorderRef.current.stop(); } catch (_) {}
+        try { mediaRecorderRef.current.stop(); } catch {}
       }
       const { mime: recMime, ext: recExt } = pickRecorderFormat();
       const mrOptions = recMime ? { mimeType: recMime } : {};
@@ -616,7 +616,7 @@ export default function ChatPage() {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    if (wsRef.current) { try { wsRef.current.close(); } catch (_) {} }
+    if (wsRef.current) { try { wsRef.current.close(); } catch {} }
 
     const ws = new WebSocket(`${WS_URL}?session_id=${SESSION_ID}`);
     ws.binaryType = 'arraybuffer';
@@ -643,7 +643,7 @@ export default function ChatPage() {
 
       // ── Text frame: JSON control messages ──────────────────────────────
       let msg;
-      try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      try { msg = JSON.parse(ev.data); } catch { return; }
 
       if (msg.type === 'vad_status') {
         setVoiceSpeaking(msg.speaking);
@@ -712,7 +712,7 @@ export default function ChatPage() {
     connectWS();
     return () => {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (wsRef.current) { try { wsRef.current.close(); } catch (_) {} }
+      if (wsRef.current) { try { wsRef.current.close(); } catch {} }
     };
   }, [connectWS]);
 
@@ -734,12 +734,12 @@ export default function ChatPage() {
 
     // Pause (not destroy) the Silero VAD so we can resume next session
     if (vadRef.current) {
-      try { vadRef.current.pause(); } catch (_) {}
+      try { vadRef.current.pause(); } catch {}
     }
 
     // Stop fallback recorder if running
     const mr = mediaRecorderRef.current;
-    if (mr && mr.state !== 'inactive') { try { mr.stop(); } catch (_) {} }
+    if (mr && mr.state !== 'inactive') { try { mr.stop(); } catch {} }
 
     // Stop mic tracks and close audio context
     if (micStreamRef.current) {
@@ -755,7 +755,7 @@ export default function ChatPage() {
 
     // Destroy the VAD instance so getUserMedia is released
     if (vadRef.current) {
-      try { vadRef.current.destroy(); } catch (_) {}
+      try { vadRef.current.destroy(); } catch {}
       vadRef.current    = null;
       vadReadyRef.current = false;
     }
