@@ -26,6 +26,7 @@ import time
 
 from app import monitoring
 from app.audio import AudioTooShortError, audio_processor, voice_log
+from app.audio.segmentation import split_for_orpheus
 from app.config import settings
 from app.core.orchestration import route_and_stream
 from app.core.text_cleaning import clean_for_tts
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 # Flush a TTS chunk when the buffer ends at a sentence boundary AND has at
 # least this many characters.  Smaller → lower TTFA (time-to-first-audio)
 # but more API round-trips.  250 chars ≈ 2-3 sentences, ~1.5 s of speech.
-MIN_FLUSH_CHARS = 250
+MIN_FLUSH_CHARS = 120
 
 # Regex: ends with sentence-terminal punctuation + whitespace or end-of-string
 _SENTENCE_END_RE = re.compile(r'[.!?\u060C\u061F]\s*$')
@@ -156,6 +157,7 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
     # ── TTS worker coroutine (runs concurrently with LLM streaming) ──────────
     async def _tts_worker() -> None:
         nonlocal audio_bytes_total, chunk_idx, first_audio_sent
+        tts_error_sent = False
 
         while True:
             chunk = await _tts_queue.get()
@@ -175,21 +177,25 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
                 is_arabic = bool(re.search(r'[\u0600-\u06FF]', clean))
                 from app.audio import _transliterate_for_arabic_tts
                 tts_input = _transliterate_for_arabic_tts(clean) if is_arabic else clean
-                audio = await audio_processor.synthesize_speech(tts_input, voice="auto")
-                if session.interrupted or session._closed:
-                    voice_log("tts_interrupted", turn_id=turn_id)
-                    break
-                audio_bytes_total += len(audio)
-                if not await session.send_bytes(audio):
-                    break
-                chunk_idx += 1
-                voice_log("tts_chunk_sent", turn_id=turn_id, chunk_idx=chunk_idx,
-                          text_len=len(clean), audio_bytes=len(audio))
+                # Groq Orpheus accepts max 200 chars per request -> sub-split.
+                for piece in split_for_orpheus(tts_input):
+                    audio = await audio_processor.synthesize_speech(piece, voice="auto")
+                    if session.interrupted or session._closed:
+                        voice_log("tts_interrupted", turn_id=turn_id)
+                        return
+                    audio_bytes_total += len(audio)
+                    if not await session.send_bytes(audio):
+                        return
+                    chunk_idx += 1
+                    voice_log("tts_chunk_sent", turn_id=turn_id, chunk_idx=chunk_idx,
+                              text_len=len(piece), audio_bytes=len(audio))
             except asyncio.CancelledError:
                 raise
             except Exception as tts_err:
-                logger.warning(f"[WS TTS Error] turn={turn_id} chunk={chunk_idx}: {tts_err}")
-                # Continue — skip this chunk, try the next one
+                logger.error(f"[WS TTS Error] turn={turn_id} chunk={chunk_idx}: {tts_err}")
+                if not tts_error_sent:
+                    tts_error_sent = True
+                    await session.send_json({"type": "error", "message": f"TTS failed: {tts_err}"})
 
     # ── LLM producer coroutine ────────────────────────────────────────────────
     async def _llm_producer() -> None:

@@ -71,7 +71,7 @@ class TextToSpeechMixin:
             return audio_bytes
 
         except Exception as exc:
-            logger.info("[TTS INFO] Groq TTS unavailable (%s) — trying OpenAI TTS if configured…", exc)
+            logger.error("[TTS FAIL] Groq TTS error (%s) — trying OpenAI TTS if configured…", exc)
             fallback = await self._synthesize_openai(text, voice)
             if fallback is not None:
                 return fallback

@@ -42,3 +42,36 @@ def batch_sentences_for_tts(sentences: list[str], min_chars: int = 120) -> list[
     if current:
         batches.append(current)
     return batches
+
+
+# Groq Orpheus rejects requests whose input exceeds 200 characters.
+ORPHEUS_MAX_CHARS = 190
+
+
+def split_for_orpheus(text: str, max_chars: int = ORPHEUS_MAX_CHARS) -> list[str]:
+    """Split ``text`` into pieces of at most ``max_chars`` characters.
+
+    Prefers sentence boundaries, then spaces, then a hard cut.
+    """
+    pieces: list[str] = []
+    current = ""
+    for sentence in split_sentences(text):
+        while len(sentence) > max_chars:
+            cut = sentence.rfind(" ", 0, max_chars)
+            cut = cut if cut > 0 else max_chars
+            head, sentence = sentence[:cut].strip(), sentence[cut:].strip()
+            if current:
+                pieces.append(current)
+                current = ""
+            if head:
+                pieces.append(head)
+        if not sentence:
+            continue
+        if current and len(current) + 1 + len(sentence) > max_chars:
+            pieces.append(current)
+            current = sentence
+        else:
+            current = f"{current} {sentence}" if current else sentence
+    if current:
+        pieces.append(current)
+    return pieces
