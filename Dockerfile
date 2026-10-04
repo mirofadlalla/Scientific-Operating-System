@@ -66,14 +66,13 @@ PY
 #
 # GlobalsHelper.wait_for_nltk_check() is lazy — a bare `import llama_index.core`
 # instantiates GlobalsHelper but never calls wait_for_nltk_check(), so the
-# NLTK corpora are NOT written to disk.  We must access the cached properties
-# (.stopwords / .punkt_tokenizer) to force the download.
+# NLTK corpora are NOT written to disk.  Accessing .stopwords calls
+# wait_for_nltk_check(), which downloads both punkt_tab and stopwords.
 RUN python - <<'PY'
 from llama_index.core.utils import globals_helper
-# Accessing these properties triggers wait_for_nltk_check() → downloads
-# punkt_tab + stopwords into _static/nltk_cache inside the venv.
+# .stopwords triggers wait_for_nltk_check() → downloads punkt_tab + stopwords
+# into _static/nltk_cache inside the venv (confirmed by CI build log).
 _ = globals_helper.stopwords
-_ = globals_helper.punkt_tokenizer
 print("NLTK punkt_tab + stopwords baked in.")
 PY
 
