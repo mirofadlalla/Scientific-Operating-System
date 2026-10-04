@@ -113,8 +113,17 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("RQ worker skipped (Redis not available)")
 
-    # 5. Pre-warm RAG engine in the background
-    asyncio.create_task(rag_agent._initialise())
+    # 5. Pre-warm RAG engine in the background.
+    #    Wrap in a shim so an unhandled exception inside _initialise() is
+    #    logged instead of propagating to the event loop's exception handler,
+    #    which would crash the uvicorn process in Python 3.11+.
+    async def _safe_init() -> None:
+        try:
+            await rag_agent._initialise()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("RAG pre-warm task raised an unexpected exception: %s", exc)
+
+    asyncio.create_task(_safe_init())
 
     yield  # ── application runs ──────────────────────────────────────────────
 

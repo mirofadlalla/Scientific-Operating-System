@@ -127,10 +127,23 @@ jobs:
             -e START_MCP_SERVER=0 \
             scientific-os-backend:ci
 
+          # Give uvicorn a moment to bind the port before the first probe.
+          sleep 3
+
+          # Wait up to 120 s for /health to respond.  Exit early if the
+          # container process dies (docker inspect exitCode != 0 means crashed).
           for i in $(seq 1 60); do
+            EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' backend)
+            STATUS=$(docker inspect --format='{{.State.Status}}' backend)
+            if [ "$STATUS" != "running" ]; then
+              echo "Container exited unexpectedly (status=$STATUS, exitCode=$EXIT_CODE)" >&2
+              docker logs backend >&2
+              exit 1
+            fi
             curl -fsS http://localhost:7860/health && break
             sleep 2
           done
+          # Final authoritative check — fails the step if the loop exhausted.
           curl -fsS http://localhost:7860/health
 
           curl -fsS http://localhost:7860/api/v1/metrics | python -c "
@@ -150,5 +163,6 @@ jobs:
             | tee /dev/stderr | grep -iq '^access-control-allow-origin:'
 
       - name: Container logs
-        if: failure()
-        run: docker logs backend || true
+        if: always()
+        run: docker logs backend 2>&1 | tail -100 || true
+
