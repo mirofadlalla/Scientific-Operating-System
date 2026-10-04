@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from app.agents.customer_support.rag.chunking import (
@@ -53,7 +55,9 @@ def test_persist_dir_falls_back_to_package_storage(monkeypatch, tmp_path):
     # parent of the HF dir is a *file* → mkdir/touch fail → local fallback
     monkeypatch.setattr(persistence, "_HF_PERSISTENT", blocker / "rag_index")
     result = persistence.get_persist_dir()
-    assert result.endswith("rag/storage/rag_index")
+    # Use Path for comparison so it works on both Linux (/) and Windows (\).
+    result_path = pathlib.Path(result)
+    assert result_path.parts[-3:] == ("rag", "storage", "rag_index")
     assert persistence.RAG_ROOT.name == "rag" and (persistence.RAG_ROOT / "storage").is_dir()
     persistence.get_persist_dir.cache_clear()
 
