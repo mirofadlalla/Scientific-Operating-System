@@ -459,10 +459,17 @@ export default function ChatPage() {
           setVoiceStatus('Listening (speaking)…');
 
           // Barge-in: if AI is active, start 700ms confirmation timer.
-          // Also skip entirely if we are within the 1 s echo-guard window
-          // (mic may be picking up speaker output right after AI audio begins).
-          const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
-          const echoGuardActive = (Date.now() - aiAudioStartTimeRef.current) < ECHO_GUARD_MS;
+          // Echo-guard logic: suppress barge-in if AI audio is CURRENTLY PLAYING
+          // (isPlayingRef.current === true) OR within 1 s after it stopped.
+          //
+          // The old guard used only a 1 s window from the moment the first chunk
+          // started.  That was too short for large Arabic responses (3–28 s of audio).
+          // With the new rule the guard is "live" for the whole playback duration
+          // plus a 1 s silence tail — the exact window during which the speaker
+          // output can leak back into the mic despite echoCancellation:true.
+          const isAIActive    = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
+          const echoGuardActive = isPlayingRef.current                                    // audio playing right now
+                               || (Date.now() - aiAudioStartTimeRef.current) < ECHO_GUARD_MS; // 1 s tail after it stops
           if (isAIActive && !echoGuardActive) {
             bargeInActiveRef.current = true;
             // Duck volume immediately
@@ -480,7 +487,7 @@ export default function ChatPage() {
               // startVoiceListeningRef will be called after the VAD onSpeechEnd fires
             }, 700);
           } else if (isAIActive && echoGuardActive) {
-            console.log('[Silero VAD] onSpeechStart suppressed — within echo-guard window');
+            console.log('[Silero VAD] onSpeechStart suppressed — echo-guard active (playing:', isPlayingRef.current, ')');
           }
         },
 

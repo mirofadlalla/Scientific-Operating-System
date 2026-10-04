@@ -40,9 +40,26 @@ Respond ONLY with a raw JSON object (no markdown, no explanation):
 {
   "intent": "CHEMICAL_SIMILARITY"|"ADMET_ANALYSIS"|"DRUG_REPURPOSING"|"BIOMEDICAL_MECHANISM"|"APP_SUPPORT_RAG"|"APP_HELP"|"OUT_OF_DOMAIN",
   "target_agent": "CHEMICAL_AGENT"|"MEDICAL_AGENT"|"RAG_AGENT"|"APP_AGENT"|"NONE",
-  "entities": {"compound": "", "smiles": "", "disease": ""},
-  "out_of_domain_reason": "brief reason only when OUT_OF_DOMAIN, else empty string"
+  "entities": {},
+  "out_of_domain_reason": ""
 }
+"""
+
+# Minimal version used as a retry prompt when json_validate_failed.
+# Omits the entities field entirely to reduce schema complexity for small models.
+COMBINED_ORCHESTRATOR_PROMPT_MINIMAL = """\
+You are a routing classifier for AI-lixir. Classify the user query and respond ONLY with raw JSON.
+
+Route to one of:
+  CHEMICAL_AGENT  (SMILES, ADMET, molecules, chemical similarity, drug repurposing)
+  MEDICAL_AGENT   (diseases, pathways, pharmacology, drug-target interactions)
+  RAG_AGENT       (platform questions, how-to, who built this)
+  APP_AGENT       (greetings, general chat, anything else)
+
+Respond ONLY with this JSON (no markdown):
+{"intent": "APP_HELP", "target_agent": "APP_AGENT", "entities": {}, "out_of_domain_reason": ""}
+
+Replace intent/target_agent with the correct values. Keep entities as {}.
 """
 
 COMPOSITE_DETECTION_PROMPT = """\

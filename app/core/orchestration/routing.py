@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from app.config import settings
 from app.core.deps import client, orchestrator, short_memory
 
-from .prompts import COMBINED_ORCHESTRATOR_PROMPT
+from .prompts import COMBINED_ORCHESTRATOR_PROMPT, COMBINED_ORCHESTRATOR_PROMPT_MINIMAL
 
 logger = logging.getLogger(__name__)
 
@@ -43,25 +43,44 @@ def _fallback_decision(text_input: str) -> RouteDecision:
 
 
 async def classify_route(text_input: str, session_id: str) -> RouteDecision:
-    """Route + domain-classify ``text_input`` in one LLM call."""
+    """Route + domain-classify ``text_input`` in one LLM call.
+
+    Retries once on ``json_validate_failed`` (Groq rejects the prompt when the
+    model produces malformed JSON) before falling back to the rule-based classifier.
+    """
     messages = [{"role": "system", "content": COMBINED_ORCHESTRATOR_PROMPT}]
     messages.extend(short_memory.get_history(session_id, limit=_HISTORY_LIMIT))
     messages.append({"role": "user", "content": text_input})
 
-    try:
-        response = await client.chat.completions.create(
-            model=settings.ROUTING_MODEL,
-            messages=messages,
-            response_format={"type": "json_object"},
-            temperature=0.0,
-        )
-        output = json.loads(response.choices[0].message.content)
-        return RouteDecision(
-            intent=output.get("intent", "APP_HELP"),
-            target_agent=output.get("target_agent", "APP_AGENT"),
-            entities=output.get("entities") or {},
-            out_of_domain_reason=output.get("out_of_domain_reason", ""),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Orchestrator routing failed: {exc}. Using fallback classifier.")
-        return _fallback_decision(text_input)
+    last_exc: Exception | None = None
+    for attempt in range(2):  # attempt 0 = normal, attempt 1 = retry
+        try:
+            response = await client.chat.completions.create(
+                model=settings.ROUTING_MODEL,
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.0,
+            )
+            raw = response.choices[0].message.content or ""
+            output = json.loads(raw)
+            return RouteDecision(
+                intent=output.get("intent", "APP_HELP"),
+                target_agent=output.get("target_agent", "APP_AGENT"),
+                entities=output.get("entities") or {},
+                out_of_domain_reason=output.get("out_of_domain_reason", ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            err_str = str(exc)
+            if "json_validate_failed" in err_str and attempt == 0:
+                # Groq rejected the JSON output — retry once with an even simpler
+                # system prompt that omits the entities field entirely.
+                logger.warning(
+                    "Orchestrator routing json_validate_failed on attempt 1 — retrying with minimal prompt"
+                )
+                messages[0] = {"role": "system", "content": COMBINED_ORCHESTRATOR_PROMPT_MINIMAL}
+                continue
+            break  # non-retryable error or second failure
+
+    logger.warning(f"Orchestrator routing failed: {last_exc}. Using fallback classifier.")
+    return _fallback_decision(text_input)
