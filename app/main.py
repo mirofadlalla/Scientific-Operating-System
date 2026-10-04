@@ -21,31 +21,41 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from app.core.lifespan   import lifespan
-from app.core.middleware  import MonitoringMiddleware, ReadinessMiddleware
-from app.api.v1.router   import api_router
-from app.core.exceptions import AppError, app_error_handler
+from app.core.logging_config import configure_logging
+
+configure_logging()  # before importing modules that log at import time
+
+from app.config       import settings as _settings  # noqa: E402
+from app.core.lifespan   import lifespan  # noqa: E402
+from app.core.middleware  import MonitoringMiddleware, ReadinessMiddleware  # noqa: E402
+from app.api.v1.router   import api_router  # noqa: E402
+from app.core.exceptions import AppError, app_error_handler  # noqa: E402
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Application
 # ──────────────────────────────────────────────────────────────────────────────
+_frontend_url = _settings.FRONTEND_URL
+
 app = FastAPI(
     title="AI-lixir Scientific Operating System",
     description=(
         "AI Scientific OS for Drug Discovery — Chemical analysis, biomedical mechanisms, "
         "RAG knowledge base, and real-time voice interaction.\n\n"
         "---\n\n"
-        "🚀 **[Live Demo (Frontend) →  https://scientific-operating-system.vercel.app/]"
-        "(https://scientific-operating-system.vercel.app/)**"
+        f"🚀 **[Live Demo (Frontend) → {_frontend_url}]({_frontend_url})**"
     ),
     version="2.0.0",
     lifespan=lifespan,
 )
 
 # ── Middleware (order matters: added last = runs first) ───────────────────────
+_cors_origins = [
+    o.strip() for o in _settings.CORS_ORIGINS.split(",") if o.strip()
+] or ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Restrict to your Vercel URL in production
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

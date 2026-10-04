@@ -34,13 +34,13 @@ pinned: false
    * 8.3 [RAG Agent (Customer Support)](#83-rag-agent-customer-support)
    * 8.4 [APP Agent (Conversational)](#84-app-agent-conversational)
 
-9. [RAG Pipeline (ai-lixir-rag-system)](#9-rag-pipeline-ai-lixir-rag-system)
+9. [RAG Pipeline (rag package)](#9-rag-pipeline-rag-package)
 
-   * 9.1 [Configuration (src/config.py)](#91-configuration-srcconfigpy)
-   * 9.2 [Embeddings (src/embeddings.py)](#92-embeddings-srcembeddingspy)
-   * 9.3 [Indexer (src/indexer.py)](#93-indexer-srcindexerpy)
-   * 9.4 [Ingestion Service (src/ingestion_service.py)](#94-ingestion-service-srcingestion_servicepy)
-   * 9.5 [Engine Builder (src/engine.py)](#95-engine-builder-srcenginepy)
+   * 9.1 [Configuration (rag/config.py)](#91-configuration-ragconfigpy)
+   * 9.2 [Embeddings (rag/embeddings/)](#92-embeddings-ragembeddings)
+   * 9.3 [Indexer (rag/indexing/)](#93-indexer-ragindexing)
+   * 9.4 [Ingestion Service (rag/ingestion_service.py)](#94-ingestion-service-ragingestion_servicepy)
+   * 9.5 [Engine Builder (rag/engine.py)](#95-engine-builder-ragenginepy)
    * 9.6 [Chunking Strategies](#96-chunking-strategies)
 
 10. [Memory System](#10-memory-system)
@@ -62,7 +62,7 @@ pinned: false
 13. [Monitoring System](#13-monitoring-system)
 
     * 13.1 [Overview](#131-overview)
-    * 13.2 [app/monitoring.py](#132-appmonitoringpy)
+    * 13.2 [app/monitoring/](#132-appmonitoring)
     * 13.3 [Dashboard (GET /monitor)](#133-dashboard-get-monitor)
     * 13.4 [Metrics API](#134-metrics-api)
 
@@ -181,15 +181,21 @@ Scientific-Operating-System/
 │   ├── __init__.py
 │   ├── config.py                    # Pydantic settings — all env vars
 │   ├── main.py                      # FastAPI root app, middleware wiring, /health, /docs
-│   ├── audio.py                     # AudioProcessor: STT (Groq Whisper) + TTS (Groq / OpenAI)
-│   ├── monitoring.py                # In-process latency, token, and agent metrics tracker
+│   ├── audio/                       # AudioProcessor: STT (Groq Whisper) + TTS (Groq / OpenAI)
+│   │   ├── processor.py             #   AudioProcessor + audio_processor singleton
+│   │   ├── stt.py / tts.py          #   speech-to-text / text-to-speech behaviour
+│   │   └── transcript_filter.py, segmentation.py, transliteration.py, formats.py, ...
+│   ├── monitoring/                  # In-process latency, token, and agent metrics tracker
+│   │   └── state.py, pricing.py, recorders.py, stats.py, snapshot.py
 │   │
 │   ├── core/                        # Central application kernel
 │   │   ├── auth.py                  # JWT creation, verification, password hashing
 │   │   ├── deps.py                  # Shared singleton dependencies (RAGAgent, MotorDB)
 │   │   ├── lifespan.py              # Startup & shutdown orchestration (Redis, RQ, Weaviate)
 │   │   ├── middleware.py            # ReadinessMiddleware & MonitoringMiddleware
-│   │   ├── orchestration.py         # Multi-agent routing kernel (route_and_stream)
+│   │   ├── logging_config.py        # Central logging setup (called from app/main.py)
+│   │   ├── orchestration/           # Multi-agent routing kernel (route_and_stream)
+│   │   │   └── router.py, routing.py, composite.py, agents_runner.py, streaming.py, memory.py, prompts.py
 │   │   └── state.py                 # Thread-safe global runtime state
 │   │
 │   ├── api/
@@ -219,13 +225,20 @@ Scientific-Operating-System/
 │   │   ├── __init__.py
 │   │   ├── voice_wrapper.py         # VoiceEnabledAgent wrapper
 │   │   ├── chemical/
-│   │   │   ├── agent.py             # ChemicalAgent: ADMET, similarity, screening
+│   │   │   ├── agent.py             # ChemicalAgent: orchestration of the MCP pipeline
+│   │   │   ├── llm.py, mcp_client.py, models.py, messages.py, prompts.py, query.py
+│   │   │   ├── mcp/                 # MCP server: chemical_server.py + tools/{admet,screening,similarity}.py
 │   │   │   └── search.py            # FAISS / similarity helpers
 │   │   ├── medical/
 │   │   │   └── agent.py             # MedicalAgent: biomedical LLM reasoning
 │   │   └── customer_support/
 │   │       ├── agent.py             # CustomerSupportRAGAgent: hybrid search singleton
-│   │       └── ai-lixir-rag-system/ # Complete LlamaIndex pipeline & chunking strategies
+│   │       ├── state.py             # rag_state readiness flags
+│   │       └── rag/                 # LlamaIndex pipeline (importable package)
+│   │           ├── embeddings/      #   base, factory, providers/{e5,jina,openai,huggingface,fallback}
+│   │           ├── indexing/        #   manager, persistence, connection, compat
+│   │           ├── chunking/        #   strategies + factory
+│   │           └── config.py, engine.py, ingestion_service.py, bootstrap.py, status.py, cli.py
 │   │
 │   └── memory/
 │       ├── short_term.py            # ShortTermMemory: bounded ring buffer (deque)
@@ -582,11 +595,11 @@ Not a separate class — handled inline in `route_and_stream()` as the fast path
 
 ---
 
-## 9. RAG Pipeline (ai-lixir-rag-system)
+## 9. RAG Pipeline (rag package)
 
-Located at `app/agents/customer_support/ai-lixir-rag-system/`. This is a self-contained sub-package added to `sys.path` at runtime.
+Located at `app/agents/customer_support/rag/`. It is a regular Python package (formerly the hyphenated `ai-lixir-rag-system/` directory, which required `sys.path` hacks) and is imported as `app.agents.customer_support.rag`. See `REFACTORING.md` for the full module map.
 
-### 9.1 Configuration (src/config.py)
+### 9.1 Configuration (rag/config.py)
 
 Dual-mode config — works both embedded in the app and as a standalone module:
 
@@ -611,7 +624,7 @@ EMBED_DIM = (
 )
 ```
 
-### 9.2 Embeddings (src/embeddings.py)
+### 9.2 Embeddings (rag/embeddings/)
 
 **`EmbeddingProviderFactory.create_embedding_model(provider, model_name, **kwargs)`**
 
@@ -662,7 +675,7 @@ Task description used for Arabic RAG:
 "Given a user question, retrieve relevant document passages that answer the question"
 ```
 
-### 9.3 Indexer (src/indexer.py)
+### 9.3 Indexer (rag/indexing/)
 
 **`VectorIndexManager`**
 
@@ -724,7 +737,7 @@ if not hasattr(_TextNode, "get_doc_id"):
 4. All failed → raise Exception (caller handles gracefully)
 ```
 
-### 9.4 Ingestion Service (src/ingestion_service.py)
+### 9.4 Ingestion Service (rag/ingestion_service.py)
 
 **`RAGIngestionService`**
 
@@ -776,7 +789,7 @@ else:
 - Sets `_client_failed = True` on connection failure → never retries during same process lifetime
 - Gracefully falls back to disk/RAM
 
-### 9.5 Engine Builder (src/engine.py)
+### 9.5 Engine Builder (rag/engine.py)
 
 **`RAGEngineBuilder.build_hybrid_query_engine(top_k, alpha)`**
 
@@ -921,7 +934,7 @@ JSON mode (is_redis=False):
 
 ## 11. Audio Pipeline
 
-**File:** `app/audio.py` — `AudioProcessor` singleton
+**Package:** `app/audio/` — `AudioProcessor` singleton (`processor.py`; STT in `stt.py`, TTS in `tts.py`)
 
 ### 11.1 Speech-to-Text (STT)
 
@@ -1189,9 +1202,9 @@ The monitoring layer collects operational metrics directly inside the FastAPI ap
 
 ---
 
-## 13.2 app/monitoring.py
+## 13.2 app/monitoring/
 
-The `monitoring.py` module acts as the central metrics collector.
+The `app.monitoring` package (`state`, `pricing`, `recorders`, `stats`, `snapshot`) acts as the central metrics collector.
 
 ### Responsibilities
 
@@ -1590,7 +1603,7 @@ async def reload_engine(self) -> None:
 
 **Root cause:** `PERSIST_DIR` pointed to `/code/...` which is ephemeral.
 
-**Fix:** `src/indexer.py`
+**Fix:** `rag/indexing/persistence.py`
 ```python
 # Now tries /data first (HF persistent), falls back to local
 try:
@@ -1607,7 +1620,7 @@ except Exception:
 
 **Root cause:** Every call to `_run_pipeline()` built a brand new `VectorStoreIndex(nodes, ...)`, discarding all previously ingested documents.
 
-**Fix:** `src/ingestion_service.py`
+**Fix:** `rag/ingestion_service.py`
 ```python
 existing = VectorIndexManager._GLOBAL_IN_MEMORY_INDEX
 if existing is not None:
@@ -1624,7 +1637,7 @@ else:
 
 **Root cause:** Bug report recommended `llama-text-embed-v2` via Groq, but `GET https://api.groq.com/openai/v1/embeddings` returns 404. Groq provides no embeddings endpoint.
 
-**Fix:** `src/embeddings.py`
+**Fix:** `rag/embeddings/factory.py`
 ```python
 if provider == "groq":
     logger.warning("Groq has no embeddings API — switching to HuggingFace.")
@@ -1666,7 +1679,7 @@ else:
 
 **Root cause:** `llama-index-core >=0.11` removed `TextNode.get_doc_id()`, but `llama-index-vector-stores-weaviate 1.x` still calls it internally.
 
-**Fix:** `src/indexer.py` — compatibility shim applied at import time:
+**Fix:** `rag/indexing/compat.py` — compatibility shim applied at import time:
 ```python
 from llama_index.core.schema import TextNode as _TextNode, BaseNode as _BaseNode
 if not hasattr(_TextNode, "get_doc_id"):

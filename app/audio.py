@@ -1,7 +1,7 @@
 """
 Audio Processing Module - STT (Groq Whisper) and TTS capabilities for agents
-- STT: Groq whisper-large-v3-turbo (uses existing GROQ_API_KEY, no OpenAI needed)
-- TTS: Groq Orpheus Arabic/English with OpenAI TTS fallback
+- STT: Groq Whisper — uses GROQ_STT_API_KEY (falls back to GROQ_API_KEY)
+- TTS: Groq PlayAI / OpenAI TTS — uses GROQ_TTS_API_KEY (falls back to GROQ_API_KEY)
 - Streaming: Chunked audio transcription for WebSocket voice channel
 - Sentence-chunked TTS: yields audio per sentence for low-latency playback
 """
@@ -21,7 +21,7 @@ import logging
 from typing import Any, AsyncIterator, Iterable
 from pathlib import Path
 from openai import AsyncOpenAI
-from app.config import settings
+from app.config import settings, groq_stt_key, groq_tts_key
 
 logger = logging.getLogger(__name__)
 
@@ -194,10 +194,16 @@ class AudioProcessor:
     """Handles Speech-to-Text (Groq Whisper) and Text-to-Speech for scientific agents"""
 
     def __init__(self):
-        # Primary client — Groq (handles both LLM and Whisper STT)
+        # STT client — uses GROQ_STT_API_KEY (falls back to GROQ_API_KEY)
         self.groq_client = AsyncOpenAI(
             base_url=settings.GROQ_BASE_URL,
-            api_key=settings.GROQ_API_KEY
+            api_key=groq_stt_key()
+        )
+
+        # TTS client — uses GROQ_TTS_API_KEY (falls back to GROQ_API_KEY)
+        self.groq_tts_client = AsyncOpenAI(
+            base_url=settings.GROQ_BASE_URL,
+            api_key=groq_tts_key()
         )
 
         # Optional: OpenAI for high-quality TTS (nova, alloy, shimmer…)
@@ -325,12 +331,15 @@ class AudioProcessor:
             WAV/Audio bytes
         """
         is_arabic = bool(re.search(r'[\u0600-\u06FF]', text))
-        model = "canopylabs/orpheus-arabic-saudi" if is_arabic else "canopylabs/orpheus-v1-english"
+        # Arabic / English Orpheus TTS models — configurable via env
+        _arabic_model  = getattr(settings, "GROQ_TTS_MODEL_ARABIC",  "canopylabs/orpheus-arabic-saudi")
+        _english_model = getattr(settings, "GROQ_TTS_MODEL_ENGLISH", "canopylabs/orpheus-v1-english")
+        model = _arabic_model if is_arabic else _english_model
         selected_voice = voice if voice != "auto" else ("abdullah" if is_arabic else "hannah")
 
         tts_start = time.time()
         try:
-            response = await self.groq_client.audio.speech.create(
+            response = await self.groq_tts_client.audio.speech.create(
                 model=model,
                 voice=selected_voice,
                 response_format="wav",
@@ -354,8 +363,9 @@ class AudioProcessor:
             if self.openai_client:
                 try:
                     oa_voice = "nova" if voice == "auto" else voice
+                    _oa_tts_model = getattr(settings, "OPENAI_TTS_MODEL", "tts-1")
                     oa_response = await self.openai_client.audio.speech.create(
-                        model="tts-1",
+                        model=_oa_tts_model,
                         voice=oa_voice,
                         response_format="wav",
                         input=text,

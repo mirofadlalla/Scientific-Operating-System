@@ -8,8 +8,10 @@
 #    runtime      slim, non-root image: venv + model cache + app code only
 #
 #  Build:   docker build -t scientific-os-backend .
-#  Slim:    docker build --build-arg PRELOAD_MODEL=0 -t scientific-os-backend .
-#           (≈2 GB smaller, but the first start downloads the model — 2-3 min)
+#  Preload:  docker build --build-arg PRELOAD_MODEL=1 -t scientific-os-backend .
+#            (Only needed for EMBEDDING_PROVIDER=huggingface. Adds ~560 MB but
+#             avoids the 2-3 min cold-start download on first container run.)
+#            For EMBEDDING_PROVIDER=jina or openai, always leave PRELOAD_MODEL=0.
 # ═════════════════════════════════════════════════════════════════════════════
 ARG PYTHON_VERSION=3.11
 
@@ -58,8 +60,11 @@ RUN python -c "import llama_index.core"
 # ─────────────────────────────────────────────────────────────────────────────
 FROM builder AS model-cache
 
-ARG PRELOAD_MODEL=1
-# Keep in sync with EMBEDDING_MODEL in app/config.py.
+# PRELOAD_MODEL=0 (default) → image contains NO embedding model weights.
+# Set PRELOAD_MODEL=1 only when EMBEDDING_PROVIDER=huggingface and you want to
+# bake the model into the image to avoid the cold-start download.
+ARG PRELOAD_MODEL=0
+# Keep in sync with EMBEDDING_MODEL in .env / app/config.py.
 ARG EMBEDDING_MODEL=intfloat/multilingual-e5-large-instruct
 ENV HF_HOME=/opt/hf
 
@@ -106,11 +111,11 @@ COPY docker/healthcheck.py /usr/local/bin/healthcheck.py
 # Paths the app writes to at runtime (see .dockerignore: no local state is baked in):
 #   /data                                    persistent RAG index (HF Spaces convention)
 #   app/memory                               long_term_store.json fallback
-#   …/ai-lixir-rag-system/storage            RAG index fallback when /data is unavailable
+#   …/rag/storage            RAG index fallback when /data is unavailable
 RUN chmod +x /usr/local/bin/entrypoint.sh \
  && python -m compileall -q app \
- && mkdir -p app/agents/customer_support/ai-lixir-rag-system/storage \
- && chown -R app:app app/memory app/agents/customer_support/ai-lixir-rag-system/storage
+ && mkdir -p app/agents/customer_support/rag/storage \
+ && chown -R app:app app/memory app/agents/customer_support/rag/storage
 
 USER app
 EXPOSE 7860

@@ -10,10 +10,10 @@ logger = logging.getLogger(__name__)
 class OrchestratorBrain:
     def __init__(self):
         # Configure a client that points to Qwen endpoint when available.
-        # Use getattr to avoid AttributeError when settings are not defined.
-        self.model = getattr(settings, "QWEN_MODEL", "qwen3-32b")
-        qwen_base = getattr(settings, "QWEN_API_BASE", None)
-        qwen_key = getattr(settings, "QWEN_API_KEY", None)
+        self.model = settings.QWEN_MODEL
+        qwen_base = settings.QWEN_API_BASE or None
+        qwen_key  = settings.QWEN_API_KEY  or None
+
         self.client = None
         if qwen_base and qwen_key and qwen_key != "placeholder_key":
             try:

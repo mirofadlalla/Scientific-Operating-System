@@ -9,7 +9,7 @@ services:
       context: .
       target: runtime
       args:
-        PRELOAD_MODEL: ${PRELOAD_MODEL:-1}          # 0 = smaller image, model downloads on first start
+        PRELOAD_MODEL: ${PRELOAD_MODEL:-0}          # 1 = bake HF model in image (adds ~560 MB)
         EMBEDDING_MODEL: ${EMBEDDING_MODEL:-intfloat/multilingual-e5-large-instruct}
     image: scientific-os-backend:latest
     container_name: scientific-os-backend
@@ -28,6 +28,7 @@ services:
       WEAVIATE_GRPC_PORT: 50051
       # Chemical agent → MCP server started by docker/entrypoint.sh in this container
       START_MCP_SERVER: ${START_MCP_SERVER:-1}
+      MCP_SERVER_PORT: ${MCP_SERVER_PORT:-8001}
     volumes:
       - backend_data:/data                           # persistent RAG index
       # Only if you build with PRELOAD_MODEL=0, keep the model across recreations:

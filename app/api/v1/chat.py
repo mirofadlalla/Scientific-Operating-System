@@ -1,10 +1,3 @@
-"""
-app.api.v1.chat
-~~~~~~~~~~~~~~~
-POST /api/v1/orchestrate  — Streaming text chat
-WS   /api/v1/ws/voice     — Real-time bi-directional voice channel
-                            (message protocol: see app.controllers.voice_controller)
-"""
 from fastapi import APIRouter, WebSocket
 
 from app.controllers import chat_controller, voice_controller

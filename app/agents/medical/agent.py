@@ -1,13 +1,14 @@
 import asyncio
 from openai import AsyncOpenAI
-from app.config import settings
+from app.config import settings, groq_llm_key
 
 class MedicalAgent:
     def __init__(self):
         # Use AsyncOpenAI so we don't block the asyncio event loop
+        # Uses GROQ_LLM_API_KEY when set, falls back to GROQ_API_KEY
         self.client = AsyncOpenAI(
             base_url=settings.GROQ_BASE_URL,
-            api_key=settings.GROQ_API_KEY
+            api_key=groq_llm_key()
         )
         self.model_name = getattr(settings, "REASONING_MODEL", settings.ORCHESTRATOR_MODEL)  # openai/gpt-oss-120b
 

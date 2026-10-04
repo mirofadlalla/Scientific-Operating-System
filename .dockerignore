@@ -7,7 +7,7 @@
 .env
 .env.*
 app/memory/long_term_store.json
-app/agents/customer_support/ai-lixir-rag-system/storage/*
+app/agents/customer_support/rag/storage/*
 
 # ── Python junk ─────────────────────────────────────────────────────────────
 .venv

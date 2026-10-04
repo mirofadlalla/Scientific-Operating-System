@@ -1,10 +1,3 @@
-"""
-app.api.v1.rag
-~~~~~~~~~~~~~~
-POST /api/v1/rag/ingest                  — Upload + ingest a document
-GET  /api/v1/rag/ingest/status/{job_id}  — Poll background job status
-GET  /api/v1/rag/status                  — Knowledge-base health check
-"""
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from app.controllers import rag_controller
@@ -23,9 +16,9 @@ async def rag_ingest(
     Upload a Markdown (.md) or plain-text (.txt) file and ingest it into the
     vector store in the background.
 
-    - **strategy**: `markdown` (default), `sentence`, or `token`.
+    - **strategy**: markdown (default), sentence, or token.
 
-    Returns a `job_id` you can poll at `/api/v1/rag/ingest/status/{job_id}`.
+    Returns a job_id you can poll at /api/v1/rag/ingest/status/{job_id}.
     """
     return await rag_controller.ingest(file, strategy)
 

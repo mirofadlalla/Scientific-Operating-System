@@ -1,9 +1,3 @@
-"""
-app.api.v1.monitoring
-~~~~~~~~~~~~~~~~~~~~~
-GET /api/v1/metrics
-GET /api/v1/metrics/requests
-"""
 from fastapi import APIRouter
 
 from app.controllers import monitoring_controller
