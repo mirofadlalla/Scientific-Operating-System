@@ -72,6 +72,11 @@ function computeAudioMetrics(freqData) {
 }
 
 // ── TTS helpers ───────────────────────────────────────────────────────────────
+// playGroqAudio: call ONLY for genuine spoken text responses (e.g. text-chat TTS).
+// NEVER call for WebSocket "status" or "thought" control messages — those are
+// UI-only labels that must not be synthesised.  Doing so would play English TTS
+// through the speaker, the mic would pick it up, Silero VAD would fire onSpeechStart,
+// and the barge-in logic would send {type:"interrupt"}, killing the real answer.
 async function playGroqAudio(text, soundEnabledRef) {
   if (!soundEnabledRef.current || !text || !text.trim()) return;
   stopTTS();
@@ -235,10 +240,14 @@ export default function ChatPage() {
   const recordingActiveRef = useRef(false);
 
   // AI streaming refs
-  const aiStreamingRef     = useRef(false);
-  const audioQueueRef      = useRef([]);
-  const isPlayingRef       = useRef(false);
-  const aiDoneRef          = useRef(false);
+  const aiStreamingRef        = useRef(false);
+  const audioQueueRef         = useRef([]);
+  const isPlayingRef          = useRef(false);
+  const aiDoneRef             = useRef(false);
+  // Echo-guard: ignore VAD barge-in triggers for 1 s after AI audio starts playing.
+  // Prevents the mic from picking up the speaker output and self-interrupting.
+  const aiAudioStartTimeRef   = useRef(0);
+  const ECHO_GUARD_MS         = 1000;
 
   const chatEndRef = useRef(null);
   const nextId     = useRef(1);
@@ -279,6 +288,8 @@ export default function ChatPage() {
     setVoiceStatus('Speaking…');
     const blob = audioQueueRef.current.shift();
     const url  = URL.createObjectURL(blob);
+    // Record when AI audio begins so the echo-guard can suppress VAD for 1 s
+    aiAudioStartTimeRef.current = Date.now();
     stopTTS();
     currentAudio = new Audio(url);
     currentAudio.onended = () => { URL.revokeObjectURL(url); playNextInQueue(); };
@@ -447,9 +458,12 @@ export default function ChatPage() {
           setVoiceSpeaking(true);
           setVoiceStatus('Listening (speaking)…');
 
-          // Barge-in: if AI is active, start 250ms confirmation timer
+          // Barge-in: if AI is active, start 700ms confirmation timer.
+          // Also skip entirely if we are within the 1 s echo-guard window
+          // (mic may be picking up speaker output right after AI audio begins).
           const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
-          if (isAIActive) {
+          const echoGuardActive = (Date.now() - aiAudioStartTimeRef.current) < ECHO_GUARD_MS;
+          if (isAIActive && !echoGuardActive) {
             bargeInActiveRef.current = true;
             // Duck volume immediately
             if (currentAudio) currentAudio.volume = 0.15;
@@ -464,7 +478,9 @@ export default function ChatPage() {
                 wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
               }
               // startVoiceListeningRef will be called after the VAD onSpeechEnd fires
-            }, 250);
+            }, 700);
+          } else if (isAIActive && echoGuardActive) {
+            console.log('[Silero VAD] onSpeechStart suppressed — within echo-guard window');
           }
         },
 
@@ -656,7 +672,10 @@ export default function ChatPage() {
           setVoiceStatus('Listening… (speak now)');
         }
       } else if (msg.type === 'thought') {
-        if (soundEnabledRef.current) playGroqAudio(msg.text, soundEnabledRef);
+        // UI-only progress text (backend sends speak:false) — never synthesise via TTS.
+        // Calling playGroqAudio here was causing the status string to be spoken via the
+        // HTTP /audio/synthesize endpoint, played through speakers, picked up by the mic,
+        // and triggering a false barge-in that cut off the real Arabic answer.
         setVoiceStatus(msg.text);
       } else if (msg.type === 'transcript') {
         setVoiceTranscript(msg.text);
