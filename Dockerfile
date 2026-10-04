@@ -61,9 +61,21 @@ if torch.version.cuda is not None or bad:
 print("CPU-only OK:", torch.__version__)
 PY
 
-# Bake llama-index's import-time downloads (NLTK punkt, tiktoken BPE) into the
-# venv so the running container never needs the network for them.
-RUN python -c "import llama_index.core"
+# Bake llama-index's import-time downloads (NLTK punkt_tab + stopwords,
+# tiktoken BPE) into the venv so the running container never needs the network.
+#
+# GlobalsHelper.wait_for_nltk_check() is lazy — a bare `import llama_index.core`
+# instantiates GlobalsHelper but never calls wait_for_nltk_check(), so the
+# NLTK corpora are NOT written to disk.  We must access the cached properties
+# (.stopwords / .punkt_tokenizer) to force the download.
+RUN python - <<'PY'
+from llama_index.core.utils import globals_helper
+# Accessing these properties triggers wait_for_nltk_check() → downloads
+# punkt_tab + stopwords into _static/nltk_cache inside the venv.
+_ = globals_helper.stopwords
+_ = globals_helper.punkt_tokenizer
+print("NLTK punkt_tab + stopwords baked in.")
+PY
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,6 +125,16 @@ RUN apt-get update \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=model-cache --chown=${APP_UID}:${APP_UID} /opt/hf /opt/hf
+
+# The venv is copied from builder where everything ran as root.  LlamaIndex
+# writes NLTK data (punkt_tab, stopwords) and tiktoken BPE cache into
+#   /opt/venv/lib/python*/site-packages/llama_index/core/_static/
+# at runtime if the app user can't write there.  Hand ownership of that
+# specific subtree to the app user so both reads and any future writes succeed.
+# We use a glob so this keeps working if the Python minor version ever changes.
+RUN chown -R ${APP_UID}:${APP_UID} \
+      /opt/venv/lib/python*/site-packages/llama_index/core/_static
+
 
 WORKDIR /code
 COPY app ./app
