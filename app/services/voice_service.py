@@ -44,9 +44,26 @@ MIN_FLUSH_CHARS = 120
 _SENTENCE_END_RE = re.compile(r'[.!?\u060C\u061F]\s*$')
 
 
-def _should_flush(buf: str) -> bool:
-    """True when buf is long enough AND ends at a sentence boundary."""
-    return len(buf) >= MIN_FLUSH_CHARS and bool(_SENTENCE_END_RE.search(buf))
+FIRST_FLUSH_CHARS = 40  # first chunk goes out early so speech starts quickly
+
+
+def _should_flush(buf: str, first: bool = False) -> bool:
+    """True when buf ends at a sentence boundary and is long enough.
+
+    The very first chunk of a reply uses a smaller threshold (lower time-to-first-audio).
+    """
+    limit = FIRST_FLUSH_CHARS if first else MIN_FLUSH_CHARS
+    return len(buf) >= limit and bool(_SENTENCE_END_RE.search(buf))
+
+
+async def _send_status(session: VoiceSession, status: str) -> bool:
+    """UI-only status line (shown as text, never synthesized)."""
+    return await session.send_json({"type": "status", "status": status, "speak": False})
+
+
+async def _send_thought(session: VoiceSession, text: str) -> bool:
+    """UI-only progress line such as "Generating answer…" (never synthesized)."""
+    return await session.send_json({"type": "thought", "text": text, "speak": False})
 
 
 async def cancel_current_task(session: VoiceSession) -> None:
@@ -96,13 +113,13 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
     voice_log("turn_start", session_id=session.session_id, turn_id=turn_id, chunk_count=len(chunks))
 
     # ── STT ──────────────────────────────────────────────────────────────────
-    await session.send_json({"type": "status", "status": "Transcribing..."})
+    await _send_status(session, "Transcribing...")
     stt_start = time.time()
 
     try:
         transcript = await audio_processor.transcribe_chunks(chunks, audio_format)
     except AudioTooShortError:
-        await session.send_json({"type": "status", "status": "No speech detected"})
+        await _send_status(session, "No speech detected")
         await session.send_json({"type": "ai_done"})
         return
     except Exception as exc:
@@ -113,14 +130,14 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
     voice_log("stt_done", turn_id=turn_id, latency_ms=stt_ms, transcript=transcript[:60])
 
     if not transcript.strip():
-        await session.send_json({"type": "status", "status": "No speech detected"})
+        await _send_status(session, "No speech detected")
         await session.send_json({"type": "ai_done"})
         return
 
     if not await session.send_json({"type": "transcript", "text": transcript, "final": True}):
         return
 
-    await session.send_json({"type": "thought", "text": "Now retrieving information…"})
+    await _send_thought(session, "Now retrieving information…")
 
     try:
         monitoring.record_tokens(
@@ -137,7 +154,7 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
         return
 
     # ── LLM streaming + concurrent TTS pipeline ──────────────────────────────
-    await session.send_json({"type": "thought", "text": "Generating answer…"})
+    await _send_thought(session, "Generating answer…")
     await session.send_json({"type": "ai_start"})
 
     session.ai_streaming = True
@@ -170,7 +187,7 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
 
             if not first_audio_sent:
                 # First audio is ready — tell the client
-                await session.send_json({"type": "status", "status": "Speaking…"})
+                await _send_status(session, "Speaking…")
                 first_audio_sent = True
 
             try:
@@ -202,6 +219,7 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
         nonlocal full_reply, first_token_time
 
         token_buf = ""
+        flushed_any = False
         try:
             async for token in route_and_stream(
                 transcript, session.session_id, "ws_user", include_images=False
@@ -221,9 +239,10 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
                 await session.send_json({"type": "ai_token", "token": token, "done": False})
 
                 # Flush when we have a complete sentence of sufficient length
-                if _should_flush(token_buf):
+                if _should_flush(token_buf, first=not flushed_any):
                     await _tts_queue.put(token_buf)
                     token_buf = ""
+                    flushed_any = True
 
         except asyncio.CancelledError:
             voice_log("turn_cancelled_during_llm", turn_id=turn_id)
