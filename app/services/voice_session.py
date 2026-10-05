@@ -24,6 +24,7 @@ class VoiceSession:
         self.interrupted = False        # User interrupted AI mid-stream
         self.current_task: Optional[asyncio.Task] = None
         self.turn_id: str = ""
+        self.client_vad: Optional[str] = None   # "silero" | "energy" as reported by the browser
         self._closed = False
 
     def new_turn(self) -> str:

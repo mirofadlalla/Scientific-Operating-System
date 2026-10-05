@@ -7,9 +7,14 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "vad-assets": "node scripts/copy-vad-assets.mjs",
+    "predev": "node scripts/copy-vad-assets.mjs",
+    "prebuild": "node scripts/copy-vad-assets.mjs"
   },
   "dependencies": {
+    "@ricky0123/vad-web": "0.0.22",
+    "onnxruntime-web": "1.14.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-router-dom": "^7.18.1",

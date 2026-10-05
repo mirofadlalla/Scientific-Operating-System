@@ -9,6 +9,7 @@ Client → Server messages (JSON text frames):
     {"type": "audio_chunk", "data": "<base64 audio>", "format": "webm"}
     {"type": "audio_end"}                 — user finished speaking
     {"type": "interrupt"}                 — interrupt current AI response
+    {"type": "client_info", "vad": "silero"|"energy", ...} — which VAD the browser uses (logged)
     {"type": "ping"}                      — keepalive
 
 Server → Client messages:
@@ -41,15 +42,22 @@ IDLE_TIMEOUT_SECONDS = 300.0   # tablets throttle timers; 5 min is safe with 10 
 # ── Message handlers ──────────────────────────────────────────────────────────
 
 async def _on_audio_chunk(session: VoiceSession, msg: dict) -> None:
+    # A turn is in flight (STT / LLM / TTS) and the user has not interrupted it.
+    # Mic audio arriving now is NOT a barge-in: speaker echo looks identical to
+    # speech, and the old "any chunk cancels the answer" rule is what produced
+    # the spurious "Interrupted" mid-answer. Real barge-in is explicit:
+    #   - {"type": "interrupt"}  (client confirmed the user is speaking), or
+    #   - a finished utterance ("audio_end"), which cancels the old turn below.
+    # Drop the chunk so it cannot leak into the next turn's buffer.
+    task_running = session.current_task is not None and not session.current_task.done()
+    if task_running and not session.interrupted:
+        voice_log("audio_chunk_ignored_during_turn", session_id=session.session_id,
+                  turn_id=session.turn_id)
+        return
+
     chunk_b64 = msg.get("data", "")
     if chunk_b64:
         session.audio_chunks.append(base64.b64decode(chunk_b64))
-
-    # User started speaking while the AI is replying → barge-in.
-    if session.ai_streaming and session.current_task and not session.interrupted:
-        session.interrupted = True
-        await session.send_json({"type": "interrupted"})
-        session.current_task.cancel()
 
 
 async def _on_audio_end(session: VoiceSession, msg: dict) -> None:
@@ -73,6 +81,18 @@ async def _on_interrupt(session: VoiceSession, msg: dict) -> None:
     await session.send_json({"type": "interrupted"})
 
 
+async def _on_client_info(session: VoiceSession, msg: dict) -> None:
+    """Browser reports which VAD it is using (Silero vs energy fallback)."""
+    vad = msg.get("vad")
+    session.client_vad = vad
+    if vad == "silero":
+        logger.info(f"[VOICE] session={session.session_id} client VAD=SILERO "
+                    f"source={msg.get('source')} model={msg.get('model')}")
+    else:
+        logger.warning(f"[VOICE] session={session.session_id} client VAD=ENERGY-FALLBACK "
+                       f"(Silero did not load) reason={msg.get('reason')}")
+
+
 async def _on_ping(session: VoiceSession, msg: dict) -> None:
     await session.send_json({"type": "pong"})
 
@@ -81,6 +101,7 @@ _HANDLERS = {
     "audio_chunk": _on_audio_chunk,
     "audio_end": _on_audio_end,
     "interrupt": _on_interrupt,
+    "client_info": _on_client_info,
     "ping": _on_ping,
 }
 

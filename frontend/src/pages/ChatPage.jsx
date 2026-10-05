@@ -21,6 +21,50 @@ const VAD_BUNDLE_URL = `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VE
 // @ricky0123/vad-web expects onnxruntime-web ESM shim loaded first
 const ONNX_URL       = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ONNX_VERSION}/dist/ort.wasm.min.js`;
 
+// ── VAD asset sources: self-hosted (public/vad, copied by scripts/copy-vad-assets.mjs)
+//    first, jsDelivr CDN as fallback. Tried in order until one works.
+const VAD_MODEL = 'v5';   // 'legacy' uses 1536-sample frames, which would make VAD_CONFIG's frame counts 3x too long
+const LOCAL_VAD_BASE = `${import.meta.env.BASE_URL}vad/`;
+const VAD_SOURCES = [
+  {
+    name:      'local',
+    ortUrl:    `${LOCAL_VAD_BASE}ort.wasm.min.js`,
+    bundleUrl: `${LOCAL_VAD_BASE}bundle.min.js`,
+    assetBase: LOCAL_VAD_BASE,
+    wasmBase:  LOCAL_VAD_BASE,
+  },
+  {
+    name:      'cdn',
+    ortUrl:    ONNX_URL,
+    bundleUrl: VAD_BUNDLE_URL,
+    assetBase: `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VERSION}/dist/`,
+    wasmBase:  `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ONNX_VERSION}/dist/`,
+  },
+];
+const VAD_SCRIPT_TIMEOUT_MS = 10000;
+const VAD_INIT_TIMEOUT_MS   = 30000;
+
+function withTimeout(promise, ms, label) {
+  let t;
+  const timeout = new Promise((_, reject) => {
+    t = setTimeout(() => reject(new Error(`${label} timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+
+// Loads a <script> and verifies it really defined `globalName` (a dev server
+// can answer a missing file with index.html, which "loads" but defines nothing).
+function loadVadScript(url, globalName) {
+  if (window[globalName]) return Promise.resolve();
+  return withTimeout(new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = url;
+    s.onload  = () => (window[globalName] ? resolve() : reject(new Error(`${url} loaded but window.${globalName} is undefined`)));
+    s.onerror = () => { s.remove(); reject(new Error(`failed to fetch ${url}`)); };
+    document.head.appendChild(s);
+  }), VAD_SCRIPT_TIMEOUT_MS, `script ${url}`);
+}
+
 // Frame size for Silero VAD = 512 samples at 16 kHz → 32 ms per frame
 // redemptionFrames: 700 ms ÷ 32 ms ≈ 22
 // preSpeechPadFrames: 300 ms ÷ 32 ms ≈ 9
@@ -224,6 +268,10 @@ export default function ChatPage() {
   const vadRef             = useRef(null);   // MicVAD instance (singleton)
   const vadReadyRef        = useRef(false);  // vad-web script loaded & VAD created
   const vadFailedRef       = useRef(false);  // vad-web failed to load → use fallback
+  const vadInitPromiseRef  = useRef(null);   // in-flight Silero init (prevents double init)
+  const vadSourceRef       = useRef(null);   // 'local' | 'cdn'
+  const vadFailReasonRef   = useRef('');
+  const vadModeRef         = useRef(null);   // 'silero' | 'energy' (last reported)
   const bargeInTimerRef    = useRef(null);   // timer for 250ms barge-in confirmation
   const bargeInActiveRef   = useRef(false);  // currently timing a barge-in
 
@@ -247,7 +295,15 @@ export default function ChatPage() {
   // Echo-guard: ignore VAD barge-in triggers for 1 s after AI audio starts playing.
   // Prevents the mic from picking up the speaker output and self-interrupting.
   const aiAudioStartTimeRef   = useRef(0);
-  const ECHO_GUARD_MS         = 1000;
+  // Time the last queued AI audio chunk finished playing (tail guard starts here).
+  const aiAudioEndTimeRef     = useRef(0);
+  // True when the current VAD speech segment began while the AI was busy
+  // (speaking, streaming, or just finished) → treat it as speaker echo, not the user.
+  const echoSpeechRef         = useRef(false);
+  const ECHO_GUARD_MS         = 1500;
+  // Voice barge-in is unreliable on speakers (the mic hears the AI). Keep off unless
+  // the user is on headphones.
+  const ALLOW_VOICE_BARGE_IN  = false;
 
   const chatEndRef = useRef(null);
   const nextId     = useRef(1);
@@ -275,6 +331,7 @@ export default function ChatPage() {
   const playNextInQueue = useCallback(() => {
     if (audioQueueRef.current.length === 0) {
       isPlayingRef.current = false;
+      aiAudioEndTimeRef.current = Date.now();
       if (aiDoneRef.current) {
         aiDoneRef.current = false;
         setVoiceStatus('Ready');
@@ -404,6 +461,7 @@ export default function ChatPage() {
             stopTTS();
             audioQueueRef.current = [];
             isPlayingRef.current  = false;
+            aiStreamingRef.current = false;   // we are interrupting; let the new recording stream
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
             }
@@ -420,38 +478,38 @@ export default function ChatPage() {
     }
   }, []);
 
-  // ── Load Silero VAD from CDN and create singleton instance ──────────────────
-  const initSileroVAD = useCallback(async (stream) => {
-    if (vadReadyRef.current || vadFailedRef.current) return;
+  // ── Report which VAD is active (browser console + server log) ───────────────
+  const reportVadMode = useCallback((mode, detail = {}) => {
+    if (vadModeRef.current === mode) return;
+    vadModeRef.current = mode;
+    if (mode === 'silero') {
+      console.log(`%c[VAD] ACTIVE: Silero VAD (source=${detail.source}, model=${VAD_MODEL})`,
+                  'color:#16a34a;font-weight:bold');
+    } else {
+      console.warn(`[VAD] ACTIVE: ENERGY fallback VAD — Silero did not load. Reason: ${detail.reason || 'unknown'}`);
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'client_info',
+        vad: mode,
+        source: detail.source || null,
+        model: mode === 'silero' ? VAD_MODEL : null,
+        reason: detail.reason || null,
+      }));
+    }
+  }, []);
 
-    try {
-      // Load onnxruntime-web shim first (sets window.ort)
-      await new Promise((resolve, reject) => {
-        if (window.ort) { resolve(); return; }
-        const s = document.createElement('script');
-        s.src   = ONNX_URL;
-        s.onload  = resolve;
-        s.onerror = reject;
-        document.head.appendChild(s);
-      });
+  // ── Load Silero VAD (self-hosted first, CDN fallback) and create singleton ──
+  const initSileroVAD = useCallback((stream) => {
+    if (vadReadyRef.current || vadFailedRef.current) return Promise.resolve();
+    if (vadInitPromiseRef.current) return vadInitPromiseRef.current;
 
-      // Load vad-web bundle (sets window.vad)
-      await new Promise((resolve, reject) => {
-        if (window.vad) { resolve(); return; }
-        const s = document.createElement('script');
-        s.src   = VAD_BUNDLE_URL;
-        s.onload  = resolve;
-        s.onerror = reject;
-        document.head.appendChild(s);
-      });
-
-      if (!window.vad?.MicVAD) throw new Error('window.vad.MicVAD not found after script load');
-
-      const myvad = await window.vad.MicVAD.new({
+    const createVad = (src) => window.vad.MicVAD.new({
         stream,
         ...VAD_CONFIG,
-        baseAssetPath:  `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VERSION}/dist/`,
-        onnxWASMBasePath: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ONNX_VERSION}/dist/`,
+        model: VAD_MODEL,               // v5 = 512-sample (32 ms) frames, matches VAD_CONFIG maths
+        baseAssetPath:    src.assetBase,
+        onnxWASMBasePath: src.wasmBase,
 
         onSpeechStart: () => {
           console.log('[Silero VAD] onSpeechStart');
@@ -468,9 +526,15 @@ export default function ChatPage() {
           // plus a 1 s silence tail — the exact window during which the speaker
           // output can leak back into the mic despite echoCancellation:true.
           const isAIActive    = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
-          const echoGuardActive = isPlayingRef.current                                    // audio playing right now
-                               || (Date.now() - aiAudioStartTimeRef.current) < ECHO_GUARD_MS; // 1 s tail after it stops
-          if (isAIActive && !echoGuardActive) {
+          // Guard stays up for the whole AI turn (including gaps BETWEEN audio chunks,
+          // when isPlayingRef is briefly false) plus a tail after the last chunk ends.
+          const echoGuardActive = isAIActive
+                               || (Date.now() - aiAudioEndTimeRef.current) < ECHO_GUARD_MS;
+          echoSpeechRef.current = echoGuardActive && !ALLOW_VOICE_BARGE_IN;
+
+          if (echoSpeechRef.current) {
+            console.log('[Silero VAD] onSpeechStart ignored — AI busy / echo-guard active');
+          } else if (isAIActive) {
             bargeInActiveRef.current = true;
             // Duck volume immediately
             if (currentAudio) currentAudio.volume = 0.15;
@@ -481,18 +545,17 @@ export default function ChatPage() {
               stopTTS();
               audioQueueRef.current = [];
               isPlayingRef.current  = false;
+              aiStreamingRef.current = false;
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
               }
-              // startVoiceListeningRef will be called after the VAD onSpeechEnd fires
             }, 700);
-          } else if (isAIActive && echoGuardActive) {
-            console.log('[Silero VAD] onSpeechStart suppressed — echo-guard active (playing:', isPlayingRef.current, ')');
           }
         },
 
         onVADMisfire: () => {
           console.log('[Silero VAD] onVADMisfire — cancelling barge-in');
+          echoSpeechRef.current = false;
           bargeInActiveRef.current = false;
           if (bargeInTimerRef.current) {
             clearTimeout(bargeInTimerRef.current);
@@ -505,6 +568,14 @@ export default function ChatPage() {
         },
 
         onSpeechEnd: (audioFloat32) => {
+          // Echo of the AI's own voice: drop it. Sending it would make the backend
+          // treat it as a new user turn and cancel the answer that is still speaking.
+          if (echoSpeechRef.current) {
+            echoSpeechRef.current = false;
+            console.log('[Silero VAD] onSpeechEnd dropped — was speaker echo');
+            setVoiceSpeaking(false);
+            return;
+          }
           console.log('[Silero VAD] onSpeechEnd — encoding WAV, samples:', audioFloat32.length);
           setVoiceSpeaking(false);
 
@@ -532,13 +603,33 @@ export default function ChatPage() {
         },
       });
 
-      vadRef.current   = myvad;
-      vadReadyRef.current = true;
-      console.log('[Silero VAD] Initialised successfully');
-    } catch (err) {
-      console.warn('[Silero VAD] Failed to load — falling back to energy VAD:', err);
-      vadFailedRef.current = true;
-    }
+    vadInitPromiseRef.current = (async () => {
+      const failures = [];
+      for (const src of VAD_SOURCES) {
+        try {
+          console.log(`[VAD] Loading Silero VAD from ${src.name}: ${src.bundleUrl}`);
+          await loadVadScript(src.ortUrl,    'ort');
+          await loadVadScript(src.bundleUrl, 'vad');
+          if (!window.vad?.MicVAD) throw new Error('window.vad.MicVAD not found after script load');
+
+          const myvad = await withTimeout(createVad(src), VAD_INIT_TIMEOUT_MS, 'MicVAD.new');
+          vadRef.current        = myvad;
+          vadReadyRef.current   = true;
+          vadSourceRef.current  = src.name;
+          console.log(`[VAD] Silero VAD initialised from ${src.name}`);
+          return;
+        } catch (err) {
+          const msg = `${src.name}: ${err?.message || err}`;
+          failures.push(msg);
+          console.warn(`[VAD] Silero load failed (${msg})`);
+        }
+      }
+      vadFailedRef.current     = true;
+      vadFailReasonRef.current = failures.join(' | ');
+      console.warn('[VAD] All Silero sources failed → energy fallback will be used.', vadFailReasonRef.current);
+    })().finally(() => { vadInitPromiseRef.current = null; });
+
+    return vadInitPromiseRef.current;
   }, [sendAudioToServer]);
 
   // ── Start listening for a voice turn (Silero path) ─────────────────────────
@@ -591,6 +682,7 @@ export default function ChatPage() {
         await initSileroVAD(micStreamRef.current);
 
         if (vadReadyRef.current && vadRef.current) {
+          reportVadMode('silero', { source: vadSourceRef.current });
           // Resume/start the VAD (it keeps the mic open across turns)
           vadRef.current.start();
           waveRafRef.current = requestAnimationFrame(animateWave);
@@ -600,7 +692,7 @@ export default function ChatPage() {
       }
 
       // ── Fallback energy VAD path ───────────────────────────────────────
-      console.warn('[VAD] Using energy-based fallback VAD');
+      reportVadMode('energy', { reason: vadFailReasonRef.current || 'Silero VAD unavailable' });
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try { mediaRecorderRef.current.stop(); } catch {}
       }
@@ -612,6 +704,10 @@ export default function ChatPage() {
 
       mr.ondataavailable = (e) => {
         if (e.data.size === 0 || wsRef.current?.readyState !== WebSocket.OPEN) return;
+        // Only stream audio from the CURRENT recorder, and never while the AI is
+        // replying: the server would otherwise see mic audio mid-answer.
+        if (mediaRecorderRef.current !== mr) return;
+        if (isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current) return;
         const reader = new FileReader();
         reader.onload = () => {
           const b64 = reader.result?.split(',')[1];
@@ -629,7 +725,7 @@ export default function ChatPage() {
       recordingActiveRef.current = false;
       addMsg('ai', `⚠️ Microphone error: ${err.message}`, 'error');
     }
-  }, [animateWave, fallbackVADLoop, initSileroVAD]);
+  }, [animateWave, fallbackVADLoop, initSileroVAD, reportVadMode]);
 
   startVoiceListeningRef.current = startVoiceListening;
 
@@ -808,6 +904,11 @@ export default function ChatPage() {
       vadRef.current    = null;
       vadReadyRef.current = false;
     }
+    // Next voice session retries Silero from scratch and re-reports the mode.
+    vadFailedRef.current     = false;
+    vadFailReasonRef.current = '';
+    vadSourceRef.current     = null;
+    vadModeRef.current       = null;
 
     setVoiceSpeaking(false);
     setVoiceProcessing(false);
