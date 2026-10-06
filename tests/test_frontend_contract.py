@@ -23,9 +23,13 @@ _API_CALL = re.compile(r"\$\{API_BASE\}(/[A-Za-z0-9_\-/]*(?:\$\{[^}]+\}[A-Za-z0-
 _WS_CALL = re.compile(r"new WebSocket\(`\$\{WS_URL\}")
 
 
+def _frontend_source_files() -> list[Path]:
+    return [f for f in FRONTEND_SRC.rglob("*") if f.suffix in {".jsx", ".js"}]
+
+
 def _frontend_api_paths() -> set[str]:
     paths: set[str] = set()
-    for f in FRONTEND_SRC.rglob("*.jsx"):
+    for f in _frontend_source_files():
         for m in _API_CALL.finditer(f.read_text(encoding="utf-8")):
             paths.add(re.sub(r"\$\{[^}]+\}", "x", m.group(1)).rstrip("/"))
     return paths
@@ -55,7 +59,7 @@ def test_every_frontend_api_call_has_a_backend_route(path):
 
 
 def test_voice_websocket_route_exists():
-    uses_ws = any(_WS_CALL.search(f.read_text(encoding="utf-8")) for f in FRONTEND_SRC.rglob("*.jsx"))
+    uses_ws = any(_WS_CALL.search(f.read_text(encoding="utf-8")) for f in _frontend_source_files())
     assert uses_ws, "frontend no longer opens the voice WebSocket"
     assert _has_route(f"{API_PREFIX}/ws/voice", websocket=True)
 
