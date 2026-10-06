@@ -1,146 +1,31 @@
 import { useState, useEffect, useRef } from 'react';
-import { API_BASE } from '../config';
+import {
+  LoginGate,
+  StepPipeline,
+  KBStatus,
+  LogEntry,
+} from '../components/RagComponents';
+import {
+  getRAGStatus,
+  ingestDocument,
+  getIngestionStatus,
+} from '../services/api';
 
-const STEP_KEYS = ['upload', 'chunk', 'embed', 'index', 'reload'];
-const STEP_LABELS = {
-  upload: '📤  Uploading file to server',
-  chunk:  '✂️  Chunking document',
-  embed:  '🔢  Generating embeddings',
-  index:  '📦  Indexing into vector store',
-  reload: '🔄  Reloading query engine',
-};
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-// ── Login Gate ───────────────────────────────────────────────────────────────
-function LoginGate({ onLogin }) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading,  setLoading]  = useState(false);
-  const [error,    setError]    = useState('');
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!username || !password) return;
-    setLoading(true); setError('');
-    try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setError(data.detail || 'Invalid credentials.'); return; }
-      onLogin(data.access_token, username);
-    } catch { setError('Network error — could not reach the server.'); }
-    finally { setLoading(false); }
-  };
-
-  return (
-    <div className="login-gate">
-      <div className="login-card">
-        <div className="login-icon">🔐</div>
-        <h2>Knowledge Base Access</h2>
-        <p>Sign in to ingest documents into the RAG knowledge base.</p>
-        <form onSubmit={handleSubmit} className="login-form">
-          <input type="text" placeholder="Username" value={username}
-            onChange={e => setUsername(e.target.value)} autoComplete="username" required />
-          <input type="password" placeholder="Password" value={password}
-            onChange={e => setPassword(e.target.value)} autoComplete="current-password" required />
-          {error && <div className="login-error">⚠️ {error}</div>}
-          <button type="submit" className="upload-btn" disabled={loading}>
-            {loading ? '⟳ Signing in…' : '🔑 Sign In'}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
-
-// ── Step pipeline UI ─────────────────────────────────────────────────────────
-function StepPipeline({ steps }) {
-  return (
-    <div className="kb-steps">
-      {STEP_KEYS.map(key => {
-        const state = steps[key] || 'idle';
-        return (
-          <div key={key} className={`kb-step ${state}`}>
-            <div className="kb-step-icon">
-              {state === 'active' && <span className="spin">⟳</span>}
-              {state === 'done'  && '✓'}
-              {state === 'error' && '✗'}
-              {state === 'idle'  && '○'}
-            </div>
-            <div className="kb-step-label">{STEP_LABELS[key]}</div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ── KB Status panel ──────────────────────────────────────────────────────────
-function KBStatus({ status }) {
-  const online = status?.weaviate_connected === true;
-  const ready  = status?.engine_ready === true;
-  const nodes  = typeof status?.node_count === 'number' ? status.node_count : '–';
-
-  const dotClass = !online ? 'offline' : ready ? 'online' : 'loading';
-
-  return (
-    <div>
-      <div className="kb-stat-grid">
-        <div className="kb-stat">
-          <div className="val">{nodes}</div>
-          <div className="lbl">Nodes</div>
-        </div>
-        <div className="kb-stat">
-          <div className="val" style={{ fontSize: 18 }}>{ready ? '✅' : online ? '…' : '❌'}</div>
-          <div className="lbl">Engine</div>
-        </div>
-        <div className="kb-stat">
-          <div className="val" style={{ fontSize: 14, color: 'var(--text-sec)' }}>
-            {status?.search_mode?.split(' ')[0] || '–'}
-          </div>
-          <div className="lbl">Mode</div>
-        </div>
-      </div>
-
-      <div className="kb-status-row">
-        <div className={`kb-dot ${dotClass}`} />
-        <span style={{ color: 'var(--text-sec)', fontSize: 13 }}>
-          {online
-            ? `RAG: ${ready ? 'Ready' : 'Initialising'} · ${nodes} nodes indexed`
-            : 'RAG: Offline — Weaviate not connected'}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-// ── Ingestion log entry ──────────────────────────────────────────────────────
-function LogEntry({ entry }) {
-  return (
-    <div className={`log-entry ${entry.type}`}>
-      <div>{entry.message}</div>
-      <div className="log-time">{entry.time}</div>
-    </div>
-  );
-}
-
-// ── Main RAG Page ───────────────────────────────────────────────────────────────
 export default function RagPage() {
-  const [token,        setToken]        = useState(null);
+  const [token, setToken] = useState(null);
   const [loggedInUser, setLoggedInUser] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
-  const [strategy, setStrategy]         = useState('markdown');
-  const [uploading, setUploading]        = useState(false);
-  const [steps, setSteps]               = useState({});
-  const [kbStatus, setKbStatus]         = useState(null);
-  const [log, setLog]                   = useState([]);
-  const fileInputRef                    = useRef(null);
-  const dropRef                         = useRef(null);
+  const [strategy, setStrategy] = useState('markdown');
+  const [uploading, setUploading] = useState(false);
+  const [steps, setSteps] = useState({});
+  const [kbStatus, setKbStatus] = useState(null);
+  const [log, setLog] = useState([]);
+  const fileInputRef = useRef(null);
+  const dropRef = useRef(null);
 
   const handleLogin = (accessToken, username) => {
     setToken(accessToken);
@@ -152,8 +37,15 @@ export default function RagPage() {
     setLoggedInUser(null);
   };
 
-  // Fetch KB status once logged in, then every 30s.
-  // (Hooks must run on every render, so this sits above the login-gate early return.)
+  const fetchKBStatus = async () => {
+    try {
+      const data = await getRAGStatus();
+      setKbStatus(data);
+    } catch {
+      /* silent */
+    }
+  };
+
   useEffect(() => {
     if (!token) return undefined;
     fetchKBStatus();
@@ -164,22 +56,22 @@ export default function RagPage() {
   // Show login gate if not authenticated
   if (!token) return <LoginGate onLogin={handleLogin} />;
 
-  const fetchKBStatus = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/rag/status`);
-      if (res.ok) setKbStatus(await res.json());
-    } catch { /* silent */ }
-  };
-
   const addLog = (type, message) => {
     const time = new Date().toLocaleTimeString();
     setLog(prev => [{ type, message, time }, ...prev].slice(0, 20));
   };
 
-  // ── Drag & drop ─────────────────────────────────────────────────────────
-  const onDragOver  = (e) => { e.preventDefault(); dropRef.current?.classList.add('drag-over'); };
-  const onDragLeave = ()  => dropRef.current?.classList.remove('drag-over');
-  const onDrop      = (e) => {
+  // Drag & drop
+  const onDragOver = (e) => {
+    e.preventDefault();
+    dropRef.current?.classList.add('drag-over');
+  };
+
+  const onDragLeave = () => {
+    dropRef.current?.classList.remove('drag-over');
+  };
+
+  const onDrop = (e) => {
     e.preventDefault();
     dropRef.current?.classList.remove('drag-over');
     const f = e.dataTransfer.files[0];
@@ -196,38 +88,21 @@ export default function RagPage() {
     setSteps({});
   };
 
-  // ── Upload & poll ─────────────────────────────────────────────────────────
+  // Upload & poll
   const handleUpload = async () => {
     if (!selectedFile) return;
     setUploading(true);
     setSteps({ upload: 'active' });
     addLog('', `📤 Starting ingestion: ${selectedFile.name}`);
 
-    const form = new FormData();
-    form.append('file', selectedFile, selectedFile.name);
-    form.append('strategy', strategy);
-
     try {
-      const res    = await fetch(`${API_BASE}/rag/ingest`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
-        body: form,
-      });
-      const result = await res.json();
-
-      if (!res.ok || result.status !== 'success') {
-        setSteps({ upload: 'error' });
-        addLog('error', `❌ ${result.detail || result.message || 'Upload failed'}`);
-        return;
-      }
-
+      const result = await ingestDocument(selectedFile, strategy, token);
       const jobId = result.job_id;
       let done = false;
 
       while (!done) {
         await sleep(600);
-        const sr   = await fetch(`${API_BASE}/rag/ingest/status/${jobId}`);
-        const data = await sr.json();
+        const data = await getIngestionStatus(jobId);
 
         if (data.status === 'pending' || data.status === 'reading') {
           setSteps({ upload: 'active' });
@@ -257,7 +132,7 @@ export default function RagPage() {
       }
     } catch (err) {
       setSteps({ upload: 'error' });
-      addLog('error', `❌ Network error: ${err.message}`);
+      addLog('error', `❌ ${err.message || 'Network error'}`);
     } finally {
       setUploading(false);
       setSelectedFile(null);
@@ -279,7 +154,7 @@ export default function RagPage() {
       </div>
 
       <div className="rag-grid">
-        {/* ── Left: Upload ── */}
+        {/* Left: Upload */}
         <div>
           <div className="rag-card">
             <div className="rag-card-title">📤 Ingest Document</div>
@@ -337,7 +212,11 @@ export default function RagPage() {
             {/* Pipeline steps */}
             {Object.keys(steps).length > 0 && (
               <>
-                <div style={{ marginTop: 20, marginBottom: 8, fontSize: 12, color: 'var(--text-sec)', fontFamily: 'var(--mono)', textTransform: 'uppercase', letterSpacing: '.5px' }}>
+                <div style={{
+                  marginTop: 20, marginBottom: 8, fontSize: 12,
+                  color: 'var(--text-sec)', fontFamily: 'var(--mono)',
+                  textTransform: 'uppercase', letterSpacing: '.5px'
+                }}>
                   Pipeline Progress
                 </div>
                 <StepPipeline steps={steps} />
@@ -356,7 +235,7 @@ export default function RagPage() {
           )}
         </div>
 
-        {/* ── Right: KB Status ── */}
+        {/* Right: KB Status */}
         <div>
           <div className="rag-card">
             <div className="rag-card-title">📊 Knowledge Base Status</div>
@@ -374,7 +253,10 @@ export default function RagPage() {
                   ['Weaviate', kbStatus.weaviate_connected ? '✅ Connected' : '❌ Offline'],
                   ['Engine Ready', kbStatus.engine_ready ? '✅ Ready' : '⏳ Loading'],
                 ].map(([label, val]) => (
-                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+                  <div key={label} style={{
+                    display: 'flex', justifyContent: 'space-between', fontSize: 13,
+                    padding: '8px 0', borderBottom: '1px solid var(--border)'
+                  }}>
                     <span style={{ color: 'var(--text-sec)' }}>{label}</span>
                     <span style={{ fontFamily: 'var(--mono)', color: 'var(--text-prim)' }}>{val}</span>
                   </div>
@@ -392,7 +274,10 @@ export default function RagPage() {
                 { name: 'Sentence', desc: 'Best for research papers, articles, and natural language content.' },
                 { name: 'Token', desc: 'Best for code, logs, or content where consistent chunk sizes matter.' },
               ].map(s => (
-                <div key={s.name} style={{ padding: '10px 14px', background: 'rgba(255,255,255,.02)', border: '1px solid var(--border)', borderRadius: 10 }}>
+                <div key={s.name} style={{
+                  padding: '10px 14px', background: 'rgba(255,255,255,.02)',
+                  border: '1px solid var(--border)', borderRadius: 10
+                }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--accent)', marginBottom: 4 }}>{s.name}</div>
                   <div style={{ fontSize: 12, color: 'var(--text-sec)', lineHeight: 1.6 }}>{s.desc}</div>
                 </div>
