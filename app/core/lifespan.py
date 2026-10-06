@@ -94,7 +94,11 @@ async def lifespan(app: FastAPI):
         )
 
     # 4. RQ worker process
-    if state.redis_available:
+    # When START_WORKER=0 a dedicated container (scientific-os-worker) is already
+    # running `rq worker default`.  Spawning a second subprocess inside the backend
+    # would double-execute jobs and leave an orphaned process — skip it.
+    _start_worker = os.environ.get("START_WORKER", "1").strip() not in ("0", "false", "no")
+    if state.redis_available and _start_worker:
         try:
             env = os.environ.copy()
             env["PYTHONPATH"] = os.getcwd()
@@ -110,6 +114,8 @@ async def lifespan(app: FastAPI):
             logger.info("RQ worker spawned successfully.")
         except Exception as exc:
             logger.warning(f"Could not start RQ worker: {exc}")
+    elif not _start_worker:
+        logger.info("RQ worker subprocess skipped (START_WORKER=0 — using dedicated worker container).")
     else:
         logger.info("RQ worker skipped (Redis not available)")
 

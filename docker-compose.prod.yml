@@ -36,6 +36,9 @@ services:
       WEAVIATE_GRPC_PORT: "50051"
       START_MCP_SERVER: "${START_MCP_SERVER:-1}"
       MCP_SERVER_PORT: "${MCP_SERVER_PORT:-8001}"
+      # The dedicated worker container handles RQ jobs; prevent the backend from
+      # spawning a redundant in-process worker subprocess via lifespan.py.
+      START_WORKER: "0"
     volumes:
       - backend_data:/data
     depends_on:
@@ -54,6 +57,53 @@ services:
       timeout: 10s
       start_period: 120s
       retries: 3
+    labels:
+      - "com.centurylinklabs.watchtower.scope=scientific-os-prod"
+
+  # ── RQ Worker ────────────────────────────────────────────────────────────────
+  # Runs the background RAG ingestion jobs enqueued by the backend onto the
+  # "default" RQ queue.  Uses the same image and environment as the backend so
+  # that all import paths (app.services.rag_service.run_background_ingest_job)
+  # resolve correctly inside the container.
+  worker:
+    image: ghcr.io/mirofadlalla/scientific-operating-system:latest
+    container_name: scientific-os-worker
+    restart: unless-stopped
+    pull_policy: always
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      WEAVIATE_HOST: weaviate
+      WEAVIATE_PORT: "8080"
+      WEAVIATE_GRPC_PORT: "50051"
+      # Worker does not start the MCP server or a nested RQ worker subprocess.
+      START_MCP_SERVER: "0"
+      START_WORKER: "0"
+      # Needed so that `python -m rq worker` can import app.* modules.
+      PYTHONPATH: /code
+    volumes:
+      - backend_data:/data                       # same RAG index volume as backend
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [scientific-os-network]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # Override the default uvicorn CMD: run the RQ worker instead.
+    # - "default" is the queue name created in lifespan.py: Queue("default", connection=conn)
+    # - --url connects to Redis using the Docker service name (resolves on scientific-os-network)
+    # - entrypoint.sh runs exec "$@", so tini + entrypoint still manage the process correctly
+    # - --with-scheduler enables RQ's built-in cron/scheduler (harmless if unused)
+    command: >
+      python -m rq worker default
+      --url redis://redis:6379/0
+      --with-scheduler
+    labels:
+      - "com.centurylinklabs.watchtower.scope=scientific-os-prod"
 
   # ── Nginx reverse proxy (TLS termination + HTTP→HTTPS redirect) ───────────────
   nginx:
@@ -71,6 +121,8 @@ services:
       backend:
         condition: service_healthy
     networks: [scientific-os-network]
+    labels:
+      - "com.centurylinklabs.watchtower.scope=scientific-os-prod"
 
   # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
@@ -86,6 +138,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    labels:
+      - "com.centurylinklabs.watchtower.scope=scientific-os-prod"
 
   # ── Weaviate vector DB ───────────────────────────────────────────────────────
   weaviate:
@@ -106,10 +160,17 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
+    labels:
+      - "com.centurylinklabs.watchtower.scope=scientific-os-prod"
 
   # ── Watchtower — automatic image updates ─────────────────────────────────────
   # Polls GHCR every 5 minutes; recreates containers when a new :latest is found.
   # Remove this service if you prefer manual `make deploy` rollouts.
+  # NOTE: Watchtower's --scope flag matches containers by the label
+  #       com.centurylinklabs.watchtower.scope=<scope>.  Every service above
+  #       carries that label so Watchtower finds them correctly.
+  # NOTE: Watchtower itself must NOT carry the scope label — if it did, it would
+  #       try to update itself and restart in a loop (the observed restart(1) bug).
   watchtower:
     image: containrrr/watchtower:latest
     container_name: scientific-os-watchtower
