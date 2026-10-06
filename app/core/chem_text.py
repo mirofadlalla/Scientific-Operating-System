@@ -44,10 +44,10 @@ def pubchem_image_url(identifier: str) -> "str | None":
       - longer than 200 characters, or
       - contains whitespace or newlines.
 
-    Uses the ``/compound/smiles/`` endpoint for SMILES strings and
-    ``/compound/name/`` for plain compound names.
-    All special characters (including ``/``) are percent-encoded with
-    ``safe=""`` so SMILES stereo-bond slashes survive the URL round-trip.
+    Uses the /compound/smiles/ endpoint for SMILES strings and
+    /compound/name/ for plain compound names.
+    All special characters (including /) are percent-encoded with
+    safe="" so SMILES stereo-bond slashes survive the URL round-trip.
     """
     if not identifier:
         return None

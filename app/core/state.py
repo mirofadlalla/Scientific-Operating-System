@@ -2,7 +2,7 @@
 app.core.state
 ~~~~~~~~~~~~~~
 All mutable module-level globals in one place.
-
+مكان مركزي بيخزن الـglobal state بتاع التطبيق.
 Rules:
   - Only primitive types, dicts, and None live here at import time.
   - The lifespan (core/lifespan.py) mutates these attributes on startup.

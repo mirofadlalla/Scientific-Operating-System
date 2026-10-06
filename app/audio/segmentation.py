@@ -28,7 +28,7 @@ def split_sentences(text: str) -> list[str]:
 
 
 def batch_sentences_for_tts(sentences: list[str], min_chars: int = 120) -> list[str]:
-    """Group sentences so each batch has at least ``min_chars`` characters.
+    """Group sentences so each batch has at least min_chars characters.
 
     Reduces TTS API calls dramatically, e.g. 15 short sentences → 3-4 batches.
     """
@@ -49,7 +49,9 @@ ORPHEUS_MAX_CHARS = 190
 
 
 def split_for_orpheus(text: str, max_chars: int = ORPHEUS_MAX_CHARS) -> list[str]:
-    """Split ``text`` into pieces of at most ``max_chars`` characters.
+    """Split text into pieces of at most max_chars characters. 
+
+    لاني مش عايز ابعت request أكبر من الحد الآمن للـ API.
 
     Prefers sentence boundaries, then spaces, then a hard cut.
     """

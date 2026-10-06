@@ -1,4 +1,4 @@
-"""Speech-to-Text (Groq Whisper) behaviour for :class:`AudioProcessor`."""
+"""Speech-to-Text (Groq Whisper) behaviour for :class:AudioProcessor."""
 
 from __future__ import annotations
 
@@ -20,17 +20,17 @@ logger = logging.getLogger(__name__)
 
 
 class SpeechToTextMixin:
-    """Requires ``self.groq_client`` (an ``AsyncOpenAI`` pointed at Groq)."""
+    """Requires self.groq_client (an AsyncOpenAI pointed at Groq)."""
 
     groq_client: AsyncOpenAI
 
     @staticmethod
     def _detect_format(audio_bytes: bytes) -> str:
-        """Detect the audio container from magic bytes (see :func:`.formats.detect_format`)."""
+        """Detect the audio container from magic bytes (see :func:.formats.detect_format)."""
         return detect_format(audio_bytes)
 
     async def transcribe_audio(self, audio_file: bytes, audio_format: str = "webm") -> str:
-        """Transcribe audio with Groq ``whisper-large-v3-turbo``.
+        """Transcribe audio with Groq whisper-large-v3-turbo.
 
         Works with any format Whisper supports (webm, mp4, wav, mp3, m4a…).
 
@@ -40,7 +40,7 @@ class SpeechToTextMixin:
 
         Raises:
             ValueError: empty buffer, or transcription failure.
-            AudioTooShortError: payload below ``MIN_AUDIO_BYTES``.
+            AudioTooShortError: payload below MIN_AUDIO_BYTES.
         """
         if not audio_file:
             raise ValueError("Empty audio buffer — nothing to transcribe")

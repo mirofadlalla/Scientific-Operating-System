@@ -20,6 +20,36 @@ Server → Client messages:
         {"type": "error", "message": "..."} | {"type": "status", "status": "..."}
     Binary frames:
         Raw WAV audio bytes (one frame per TTS batch)
+
+                        Client connects
+                            ↓
+                        websocket.accept()
+                            ↓
+                        Create VoiceSession
+                            ↓
+                        Start heartbeat
+                            ↓
+                    ┌─────────────────────┐
+                    │   while True        │
+                    │                     │
+                    │   receive messa     │
+                    │       ↓             │
+                    │   identify te       │
+                    │       ↓             │
+                    │   call handle       │
+                    └─────────────────────┘
+                            ↓
+                        disconnect / timeout / error
+                            ↓
+                        finally
+                            ↓
+                        cancel AI task
+                            ↓
+                        cancel heartbeat
+                            ↓
+                        remove session
+                            ↓
+                        cleanup complete
 """
 import asyncio
 import base64
@@ -49,6 +79,7 @@ async def _on_audio_chunk(session: VoiceSession, msg: dict) -> None:
     #   - {"type": "interrupt"}  (client confirmed the user is speaking), or
     #   - a finished utterance ("audio_end"), which cancels the old turn below.
     # Drop the chunk so it cannot leak into the next turn's buffer.
+
     task_running = session.current_task is not None and not session.current_task.done()
     if task_running and not session.interrupted:
         voice_log("audio_chunk_ignored_during_turn", session_id=session.session_id,
@@ -57,7 +88,7 @@ async def _on_audio_chunk(session: VoiceSession, msg: dict) -> None:
 
     chunk_b64 = msg.get("data", "")
     if chunk_b64:
-        session.audio_chunks.append(base64.b64decode(chunk_b64))
+        session.audio_chunks.append(base64.b64decode(chunk_b64)) # دي بتحوّل الـBase64 string تاني إلى raw bytes.
 
 
 async def _on_audio_end(session: VoiceSession, msg: dict) -> None:
@@ -121,12 +152,12 @@ async def handle_voice_channel(websocket: WebSocket, session_id: str) -> None:
             try:
                 # Use receive() instead of receive_text() so that unexpected
                 # binary frames from tablets don't crash the loop.
-                frame = await asyncio.wait_for(websocket.receive(), timeout=IDLE_TIMEOUT_SECONDS)
+                frame = await asyncio.wait_for(websocket.receive(), timeout=IDLE_TIMEOUT_SECONDS) # استنى رسالة جديدة من الـ WebSocket، لكن بحد أقصى IDLE_TIMEOUT_SECONDS
             except asyncio.TimeoutError:
                 logger.info(f"[WS] Session {session_id} timed out ({IDLE_TIMEOUT_SECONDS:.0f}s no message)")
                 break
 
-            # Text frames carry JSON control messages
+            # Text frames carry JSON control messages الفرونت بيبعت سترينج جيشون {"type": "audio_end"}
             if "text" in frame:
                 raw = frame["text"]
             elif "bytes" in frame:
@@ -137,7 +168,7 @@ async def handle_voice_channel(websocket: WebSocket, session_id: str) -> None:
                 # WebSocketDisconnect or close frame
                 raise WebSocketDisconnect()
 
-            msg = json.loads(raw)
+            msg = json.loads(raw) # تحويل سترينج الجيشون إلى dict
             handler = _HANDLERS.get(msg.get("type"))
             if handler:
                 await handler(session, msg)

@@ -15,10 +15,10 @@ def select_agents(intent: str, target_agent: str, entities: dict) -> list[str]:
     """
     Return an ordered list (no duplicates) of agent keys to run.
 
-    Possible return values contain any subset of: ``"CHEMICAL"``, ``"MEDICAL"``.
-    ``RAG_AGENT`` / ``APP_AGENT`` / anything else → ``[]``.
+    Possible return values contain any subset of: "CHEMICAL", "MEDICAL".
+    RAG_AGENT / APP_AGENT / anything else → [].
 
-    Entity values of ``None`` or ``""`` are treated as absent.
+    Entity values of None or "" are treated as absent.
 
     Decision table
     ~~~~~~~~~~~~~~
@@ -81,7 +81,7 @@ def build_agent_context(
     intent: str,
 ) -> str:
     """
-    Build the ``agent_raw_output`` string that is injected into the synthesis prompt.
+    Build the agent_raw_output string that is injected into the synthesis prompt.
 
     Rules
     -----

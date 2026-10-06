@@ -1,4 +1,4 @@
-"""Text-to-Speech (Groq Orpheus → OpenAI fallback) behaviour for :class:`AudioProcessor`."""
+"""Text-to-Speech (Groq Orpheus → OpenAI fallback) behaviour for :class:AudioProcessor."""
 
 from __future__ import annotations
 
@@ -30,19 +30,19 @@ async def _read_audio(response: Any) -> bytes:
 
 
 class TextToSpeechMixin:
-    """Requires ``self.groq_tts_client`` and optionally ``self.openai_client``."""
+    """Requires self.groq_tts_client and optionally self.openai_client."""
 
     groq_tts_client: AsyncOpenAI
     openai_client: Optional[AsyncOpenAI]
 
     async def synthesize_speech(self, text: str, voice: str = "auto") -> bytes:
-        """Synthesise ``text`` with Groq Orpheus, falling back to OpenAI TTS if configured.
+        """Synthesise text with Groq Orpheus, falling back to OpenAI TTS if configured.
 
         Language is auto-detected from the text.
 
         Args:
             text: text to synthesise.
-            voice: voice name; ``'auto'`` picks ``abdullah`` (Arabic) / ``hannah`` (English).
+            voice: voice name; 'auto' picks abdullah (Arabic) / hannah (English).
 
         Returns:
             WAV audio bytes.
@@ -78,7 +78,7 @@ class TextToSpeechMixin:
             raise ValueError(f"Speech synthesis failed: {exc}") from exc
 
     async def _synthesize_openai(self, text: str, voice: str) -> Optional[bytes]:
-        """OpenAI TTS fallback; returns ``None`` if unconfigured or failing."""
+        """OpenAI TTS fallback; returns None if unconfigured or failing."""
         if not self.openai_client:
             return None
         try:
