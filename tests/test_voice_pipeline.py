@@ -174,14 +174,15 @@ class TestWebSocketVoiceConnect:
 class TestWebSocketVoicePipeline:
     """Test the full voice turn pipeline."""
 
-    def test_audio_end_no_audio_returns_error(self, client):
-        """Sending audio_end without any chunks should return an error."""
+    def test_audio_end_no_audio_reports_no_speech(self, client):
+        """audio_end without any chunks is not an error: the client is told to resume listening."""
         with client.websocket_connect("/api/v1/ws/voice?session_id=test_no_audio") as ws:
             ws.send_text(json.dumps({"type": "audio_end", "format": "webm"}))
-            # Should receive an error message
-            resp = json.loads(ws.receive_text())
-            assert resp["type"] == "error"
-            assert "No audio" in resp.get("message", "")
+            status = json.loads(ws.receive_text())
+            assert status["type"] == "status"
+            assert status["status"] == "No speech detected"
+            done = json.loads(ws.receive_text())
+            assert done["type"] == "ai_done"
 
     def test_full_voice_turn(self, client, mock_transcribe, mock_tts_chunked, mock_orchestration):
         """

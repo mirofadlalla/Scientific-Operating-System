@@ -53,6 +53,7 @@ Server → Client messages:
 """
 import asyncio
 import base64
+import binascii
 import json
 import logging
 import traceback
@@ -67,6 +68,13 @@ from app.services.voice_session import VoiceSession
 logger = logging.getLogger(__name__)
 
 IDLE_TIMEOUT_SECONDS = 300.0   # tablets throttle timers; 5 min is safe with 10 s pings
+MAX_UTTERANCE_BYTES = 25 * 1024 * 1024   # hard cap on one buffered utterance
+
+
+def _turn_in_flight(session: VoiceSession) -> bool:
+    """True while a turn (STT / LLM / TTS) is running and has not been interrupted."""
+    task = session.current_task
+    return task is not None and not task.done() and not session.interrupted
 
 
 # ── Message handlers ──────────────────────────────────────────────────────────
@@ -77,24 +85,52 @@ async def _on_audio_chunk(session: VoiceSession, msg: dict) -> None:
     # speech, and the old "any chunk cancels the answer" rule is what produced
     # the spurious "Interrupted" mid-answer. Real barge-in is explicit:
     #   - {"type": "interrupt"}  (client confirmed the user is speaking), or
-    #   - a finished utterance ("audio_end"), which cancels the old turn below.
+    #   - a finished utterance ("audio_end") that carries audio of its own.
     # Drop the chunk so it cannot leak into the next turn's buffer.
 
-    task_running = session.current_task is not None and not session.current_task.done()
-    if task_running and not session.interrupted:
+    if _turn_in_flight(session):
         voice_log("audio_chunk_ignored_during_turn", session_id=session.session_id,
                   turn_id=session.turn_id)
         return
 
     chunk_b64 = msg.get("data", "")
-    if chunk_b64:
-        session.audio_chunks.append(base64.b64decode(chunk_b64)) # دي بتحوّل الـBase64 string تاني إلى raw bytes.
+    if not chunk_b64:
+        return
+
+    try:
+        chunk = base64.b64decode(chunk_b64)
+    except (binascii.Error, ValueError):
+        logger.warning(f"[VOICE] session={session.session_id} dropped malformed base64 audio chunk")
+        return
+
+    # Bound the buffer: a client that streams forever without "audio_end" must not
+    # be able to grow server memory without limit.
+    if session.audio_bytes + len(chunk) > MAX_UTTERANCE_BYTES:
+        voice_log("audio_buffer_overflow", session_id=session.session_id, turn_id=session.turn_id)
+        session.audio_chunks = []
+        return
+
+    session.audio_chunks.append(chunk)
 
 
 async def _on_audio_end(session: VoiceSession, msg: dict) -> None:
-    if session.current_task and not session.current_task.done():
-        session.interrupted = True
-        await voice_service.cancel_current_task(session)
+    if _turn_in_flight(session):
+        # "audio_end" with no preceding "interrupt" while an answer is being produced
+        # is speaker echo / background noise picked up by the client VAD. Cancelling
+        # the turn here is what cut answers off when the user had not said anything
+        # (and then failed with "No audio received", because the chunk had already
+        # been dropped above). Keep the current answer going and discard the noise.
+        voice_log("audio_end_ignored_during_turn", session_id=session.session_id,
+                  turn_id=session.turn_id)
+        session.audio_chunks = []
+        return
+
+    if not session.audio_chunks:
+        # Nothing was recorded (e.g. chunks dropped by a reconnect): tell the client
+        # to resume listening instead of surfacing a scary "No audio received" error.
+        await session.send_json({"type": "status", "status": "No speech detected", "speak": False})
+        await session.send_json({"type": "ai_done"})
+        return
 
     audio_format = msg.get("format", "webm")
     turn_id = session.new_turn()

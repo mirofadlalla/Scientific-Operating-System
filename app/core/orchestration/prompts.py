@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.core.prompt_rules import CONCISE_ANSWER_RULE
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Routing / composite-detection prompts
 # ──────────────────────────────────────────────────────────────────────────────
@@ -96,7 +98,9 @@ GREETING_SYSTEM_PROMPT = (
     "Be concise and natural. If it's a greeting, introduce yourself briefly and invite them "
     "to ask about drug discovery, molecular analysis, ADMET predictions, or biomedical topics. "
     "If asked who built you, who your master/creator/owner is: Omar Fadlallah. "
-    "Never say you cannot help with greetings — always engage positively."
+    "Never say you cannot help with greetings — always engage positively. "
+    "Greetings and small talk deserve one or two short sentences. "
+    + CONCISE_ANSWER_RULE
 )
 
 
@@ -114,7 +118,8 @@ def build_synthesis_system_prompt(is_arabic: bool) -> str:
         "explain it clearly based on what you know about the system's design. "
         "NEVER say the question is outside your domain if it relates to science, chemistry, biology, "
         "drug discovery, or how this AI system works. "
-        "If asked who built you or who your master/creator is: Omar Fadlallah."
+        "If asked who built you or who your master/creator is: Omar Fadlallah. "
+        f"{CONCISE_ANSWER_RULE}"
     )
 
 

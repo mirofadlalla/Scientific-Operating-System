@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from .constants import WHISPER_HALLUCINATION_BLOCKLIST
+from .constants import WHISPER_HALLUCINATION_BLOCKLIST, WHISPER_PROMPT
 
 _NO_SPEECH_HARD_LIMIT = 0.6
 _NO_SPEECH_SOFT_LIMIT = 0.3
@@ -18,6 +18,21 @@ def _normalize_transcript_line(text: str) -> str:
 
 
 _NORMALIZED_BLOCKLIST = frozenset(_normalize_transcript_line(i) for i in WHISPER_HALLUCINATION_BLOCKLIST)
+_NORMALIZED_PROMPT = _normalize_transcript_line(WHISPER_PROMPT)
+_PROMPT_ECHO_MIN_WORDS = 4
+
+
+def _is_prompt_echo(normalized: str) -> bool:
+    """True when Whisper just parroted its own bias prompt back.
+
+    On near-silent / echo-only audio Whisper often returns (part of) the ``prompt``
+    text. Left in, it reaches the LLM as if the user had said it and the agent
+    answers a question nobody asked.
+    """
+    return (
+        len(normalized.split()) >= _PROMPT_ECHO_MIN_WORDS
+        and normalized in _NORMALIZED_PROMPT
+    )
 
 
 def _segment_field(segment: Any, name: str, default: float = 0.0) -> float:
@@ -70,6 +85,9 @@ def filter_whisper_hallucinations(result: Any) -> str:
         text = _result_text(result)
 
     text = re.sub(r"\s+", " ", text).strip()
-    if not text or _normalize_transcript_line(text) in _NORMALIZED_BLOCKLIST:
+    if not text:
+        return ""
+    normalized = _normalize_transcript_line(text)
+    if normalized in _NORMALIZED_BLOCKLIST or _is_prompt_echo(normalized):
         return ""
     return text

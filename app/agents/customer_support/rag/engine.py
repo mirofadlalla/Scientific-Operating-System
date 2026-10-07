@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from app.core.prompt_rules import CONCISE_ANSWER_RULE
 from llama_index.core import PromptTemplate, VectorStoreIndex
 from llama_index.core.query_engine import BaseQueryEngine
 from llama_index.vector_stores.weaviate import WeaviateVectorStore
@@ -17,9 +18,12 @@ QA_PROMPT_TEMPLATE = (
     "{context_str}\n"
     "---------------------\n"
     "Given the context information and NOT prior knowledge, "
-    "answer the user query accurately, structurally, and professionally.\n"
+    "answer the user query accurately and professionally.\n"
     "If the answer cannot be found or inferred directly from the provided context, "
-    "honestly state that the information is not available in the documentation.\n\n"
+    "reply with exactly this sentence and nothing else: "
+    "The documentation does not contain information about this topic.\n"
+    + CONCISE_ANSWER_RULE.replace("{", "{{").replace("}", "}}")
+    + "\n\n"
     "Query: {query_str}\n"
     "Answer: "
 )

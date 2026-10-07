@@ -23,9 +23,10 @@ import asyncio
 import logging
 import re
 import time
+from contextlib import aclosing
 
 from app import monitoring
-from app.audio import AudioTooShortError, audio_processor, voice_log
+from app.audio import AudioTooShortError, _transliterate_for_arabic_tts, audio_processor, voice_log
 from app.audio.segmentation import split_for_orpheus
 from app.config import settings
 from app.core.orchestration import route_and_stream
@@ -107,7 +108,8 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
     session.audio_chunks = []
 
     if not chunks:
-        await session.send_json({"type": "error", "message": "No audio received"})
+        await _send_status(session, "No speech detected")
+        await session.send_json({"type": "ai_done"})
         return
 
     voice_log("turn_start", session_id=session.session_id, turn_id=turn_id, chunk_count=len(chunks))
@@ -172,6 +174,11 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
     first_audio_sent = False
 
     # ── TTS worker coroutine (runs concurrently with LLM streaming) ──────────
+    async def _drain_queue() -> None:
+        """Consume the queue up to the sentinel so the producer never blocks on put()."""
+        while await _tts_queue.get() is not None:
+            pass
+
     async def _tts_worker() -> None:
         nonlocal audio_bytes_total, chunk_idx, first_audio_sent
         tts_error_sent = False
@@ -180,6 +187,11 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
             chunk = await _tts_queue.get()
             if chunk is None:           # sentinel — LLM is done
                 break
+
+            if session.interrupted or session._closed:
+                voice_log("tts_interrupted", turn_id=turn_id)
+                await _drain_queue()
+                return
 
             clean = clean_for_tts(chunk)
             if not clean:
@@ -192,16 +204,17 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
 
             try:
                 is_arabic = bool(re.search(r'[\u0600-\u06FF]', clean))
-                from app.audio import _transliterate_for_arabic_tts
                 tts_input = _transliterate_for_arabic_tts(clean) if is_arabic else clean
                 # Groq Orpheus accepts max 200 chars per request -> sub-split.
                 for piece in split_for_orpheus(tts_input):
                     audio = await audio_processor.synthesize_speech(piece, voice="auto")
                     if session.interrupted or session._closed:
                         voice_log("tts_interrupted", turn_id=turn_id)
+                        await _drain_queue()
                         return
                     audio_bytes_total += len(audio)
                     if not await session.send_bytes(audio):
+                        await _drain_queue()
                         return
                     chunk_idx += 1
                     voice_log("tts_chunk_sent", turn_id=turn_id, chunk_idx=chunk_idx,
@@ -221,28 +234,32 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
         token_buf = ""
         flushed_any = False
         try:
-            async for token in route_and_stream(
+            # aclosing(): leaving the loop early (interrupt / cancel) closes the
+            # generator immediately, which stops the upstream LLM stream instead of
+            # leaving it running (and billing tokens) until garbage collection.
+            async with aclosing(route_and_stream(
                 transcript, session.session_id, "ws_user", include_images=False
-            ):
-                if session.interrupted:
-                    voice_log("turn_interrupted_during_llm", turn_id=turn_id,
-                              tokens_so_far=len(full_reply))
-                    break
+            )) as reply_stream:
+                async for token in reply_stream:
+                    if session.interrupted:
+                        voice_log("turn_interrupted_during_llm", turn_id=turn_id,
+                                  tokens_so_far=len(full_reply))
+                        break
 
-                full_reply += token
-                token_buf  += token
+                    full_reply += token
+                    token_buf  += token
 
-                if first_token_time is None:
-                    first_token_time = time.time()
+                    if first_token_time is None:
+                        first_token_time = time.time()
 
-                # Stream token to UI immediately (raw markdown — not cleaned)
-                await session.send_json({"type": "ai_token", "token": token, "done": False})
+                    # Stream token to UI immediately (raw markdown — not cleaned)
+                    await session.send_json({"type": "ai_token", "token": token, "done": False})
 
-                # Flush when we have a complete sentence of sufficient length
-                if _should_flush(token_buf, first=not flushed_any):
-                    await _tts_queue.put(token_buf)
-                    token_buf = ""
-                    flushed_any = True
+                    # Flush when we have a complete sentence of sufficient length
+                    if _should_flush(token_buf, first=not flushed_any):
+                        await _tts_queue.put(token_buf)
+                        token_buf = ""
+                        flushed_any = True
 
         except asyncio.CancelledError:
             voice_log("turn_cancelled_during_llm", turn_id=turn_id)
@@ -250,8 +267,9 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
         except Exception as exc:
             await session.send_json({"type": "error", "message": f"Agent error: {exc}"})
 
-        # Flush whatever remains in the buffer (tail of the response)
-        if token_buf.strip():
+        # Flush whatever remains in the buffer (tail of the response) — unless the
+        # user interrupted, in which case the tail must not be spoken.
+        if token_buf.strip() and not session.interrupted:
             await _tts_queue.put(token_buf)
 
         # Signal worker that the stream is exhausted

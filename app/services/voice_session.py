@@ -27,6 +27,11 @@ class VoiceSession:
         self.client_vad: Optional[str] = None   # "silero" | "energy" as reported by the browser
         self._closed = False
 
+    @property
+    def audio_bytes(self) -> int:
+        """Total size of the audio currently buffered for the next turn."""
+        return sum(len(c) for c in self.audio_chunks)
+
     def new_turn(self) -> str:
         self.turn_id = uuid.uuid4().hex[:8]
         self.interrupted = False

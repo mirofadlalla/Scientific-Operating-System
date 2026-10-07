@@ -1,6 +1,6 @@
-import asyncio
 from openai import AsyncOpenAI
 from app.config import settings, groq_llm_key
+from app.core.prompt_rules import CONCISE_ANSWER_RULE
 
 class MedicalAgent:
     def __init__(self):
@@ -26,7 +26,8 @@ class MedicalAgent:
             "1. Focus on Drug-Target Interactions, receptor bindings, and downstream signaling pathways.\n"
             "2. Evaluate genomic/proteomic feasibility for drug repurposing candidates.\n"
             "3. Use professional, precise biochemical and pharmacodynamics terminology.\n"
-            "4. Do NOT output clinical advice, symptoms checklists, or generic health tips."
+            "4. Do NOT output clinical advice, symptoms checklists, or generic health tips.\n\n"
+            + CONCISE_ANSWER_RULE
         )
 
         if user_query:

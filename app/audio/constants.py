@@ -14,6 +14,9 @@ WHISPER_HALLUCINATION_BLOCKLIST = frozenset({
     "thank you for watching.",
     "ترجمة نانسي قنقر",
     "اشتركوا في القناة",
+    "subtitles by the amara.org community",
+    "please subscribe to my channel",
+    "like and subscribe",
 })
 
 WHISPER_PROMPT = (

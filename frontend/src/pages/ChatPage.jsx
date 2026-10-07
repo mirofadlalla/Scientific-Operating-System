@@ -97,23 +97,33 @@ export default function ChatPage() {
       session.setVoiceProcessing(false);
       setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m));
       if (session.isPlayingRef.current || session.audioQueueRef.current.length > 0) {
+        // Audio is still playing: playNextInQueue() resumes listening once it drains.
+        session.aiDoneRef.current = true;
         session.setVoiceStatus('Speaking…');
       } else {
+        // Nothing left to play. Reset the flag BEFORE restarting the mic: it used to be
+        // set to true afterwards, which left a stale flag that re-armed listening
+        // during the next answer.
+        session.aiDoneRef.current = false;
         session.setVoiceStatus('Ready');
         if (session.voiceActive && session.startVoiceListeningRef.current) {
           session.startVoiceListeningRef.current();
         }
       }
-      session.aiDoneRef.current = true;
     } else if (msg.type === 'interrupted') {
       stopTTS();
       session.audioQueueRef.current = [];
       session.isPlayingRef.current = false;
       session.aiStreamingRef.current = false;
+      session.aiDoneRef.current = false;
       session.setVoiceProcessing(false);
       session.setVoiceStatus('Interrupted');
+      // Don't leave the cut-off answer bubble spinning forever.
+      setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m));
     } else if (msg.type === 'error') {
+      session.aiStreamingRef.current = false;
       session.setVoiceProcessing(false);
+      setMessages(prev => prev.map(m => m.streaming ? { ...m, streaming: false } : m));
       session.setVoiceStatus('Error');
       addMsg('ai', `⚠️ Voice error: ${msg.message || 'Unknown error'}`, 'error');
       console.error('[WS Error]', msg.message);

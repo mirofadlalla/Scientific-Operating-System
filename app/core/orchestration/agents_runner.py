@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 _NO_INFO_PHRASES = (
     "does not contain information", "not in the documentation",
+    "not available in the documentation", "not available in the provided",
+    "not mentioned in the documentation", "not covered in the documentation",
     "knowledge base is currently", "documentation does not",
     "cannot find", "no information",
 )

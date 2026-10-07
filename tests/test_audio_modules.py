@@ -112,3 +112,15 @@ def test_segmentation_helpers():
     assert split_sentences("Hello. OK. Fine. A longer sentence.")[0].startswith("Hello.")
     assert batch_sentences_for_tts([]) == []
     assert batch_sentences_for_tts(["a" * 130, "b"], 120) == ["a" * 130, "b"]
+
+
+def test_whisper_prompt_echo_is_dropped():
+    """Whisper parrots its bias prompt on near-silent audio; that is not user speech."""
+    from app.audio.constants import WHISPER_PROMPT
+    from app.audio.transcript_filter import filter_whisper_hallucinations
+
+    assert filter_whisper_hallucinations(WHISPER_PROMPT) == ""
+    assert filter_whisper_hallucinations("Scientific queries in Arabic (العربية) and English") == ""
+    # Short or genuinely different utterances are untouched.
+    assert filter_whisper_hallucinations("drug discovery") == "drug discovery"
+    assert filter_whisper_hallucinations("what is the ADMET of aspirin") == "what is the ADMET of aspirin"

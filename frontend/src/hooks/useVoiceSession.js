@@ -185,7 +185,12 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
       }
     } else {
       const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
-      if (isAIActive) {
+      // The energy detector cannot tell the user's voice from the AI's own voice
+      // coming out of the speakers, so voice barge-in is only evaluated when it is
+      // explicitly enabled. Without this gate, speaker echo above the threshold
+      // sent a spurious {"type":"interrupt"} and cut the answer off mid-sentence
+      // even though the user never spoke.
+      if (isAIActive && ALLOW_VOICE_BARGE_IN) {
         const BARGE_IN_THRESHOLD = 35.0;
         const MIN_BARGE_IN_MS = 600;
         if (speechRms > BARGE_IN_THRESHOLD) {
@@ -238,16 +243,21 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
 
     vadInitPromiseRef.current = initializeSileroVAD(stream, {
       onSpeechStart: () => {
-        setVoiceSpeaking(true);
-        setVoiceStatus('Listening (speaking)…');
-
         const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
         const echoGuardActive = isAIActive || (Date.now() - aiAudioEndTimeRef.current) < ECHO_GUARD_MS;
         echoSpeechRef.current = echoGuardActive && !ALLOW_VOICE_BARGE_IN;
 
         if (echoSpeechRef.current) {
+          // Almost certainly the AI's own voice leaking into the mic: do not touch the
+          // UI (no "Listening (speaking)" flicker) and never start a barge-in timer.
           console.log('[Silero VAD] onSpeechStart ignored — AI busy / echo-guard active');
-        } else if (isAIActive) {
+          return;
+        }
+
+        setVoiceSpeaking(true);
+        setVoiceStatus('Listening (speaking)…');
+
+        if (isAIActive) {
           bargeInActiveRef.current = true;
           const currAudio = getActiveAudio();
           if (currAudio) currAudio.volume = 0.15;
