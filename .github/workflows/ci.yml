@@ -1,10 +1,16 @@
 name: CI
 
 on:
+  # Frontend-only changes (frontend/**) don't trigger CI/CD; the frontend is
+  # deployed separately (Vercel). A commit touching backend files still runs.
   push:
     branches: [main, develop]
+    paths-ignore:
+      - "frontend/**"
   pull_request:
     branches: [main, develop]
+    paths-ignore:
+      - "frontend/**"
   workflow_dispatch:
 
 # Cancel superseded runs on the same branch/PR.

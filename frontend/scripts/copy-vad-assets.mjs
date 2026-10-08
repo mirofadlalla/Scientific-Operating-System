@@ -18,6 +18,8 @@ const files = [
   [ort, 'ort.wasm.min.js'],
   [ort, 'ort-wasm.wasm'],
   [ort, 'ort-wasm-simd.wasm'],
+  [ort, 'ort-wasm-threaded.wasm'],
+  [ort, 'ort-wasm-simd-threaded.wasm'],
 ];
 
 mkdirSync(out, { recursive: true });
