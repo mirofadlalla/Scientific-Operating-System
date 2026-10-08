@@ -1,16 +1,10 @@
 name: CI
 
 on:
-  # Frontend-only changes (frontend/**) don't trigger CI/CD; the frontend is
-  # deployed separately (Vercel). A commit touching backend files still runs.
   push:
     branches: [main, develop]
-    paths-ignore:
-      - "frontend/**"
   pull_request:
     branches: [main, develop]
-    paths-ignore:
-      - "frontend/**"
   workflow_dispatch:
 
 # Cancel superseded runs on the same branch/PR.
@@ -80,6 +74,12 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      - name: Verify VAD assets are in dist
+        run: |
+          test -s dist/vad/bundle.min.js        || (echo "dist/vad/bundle.min.js missing or empty"       && exit 1)
+          test -s dist/vad/ort.wasm.min.js      || (echo "dist/vad/ort.wasm.min.js missing or empty"     && exit 1)
+          test -s dist/vad/silero_vad_v5.onnx   || (echo "dist/vad/silero_vad_v5.onnx missing or empty"  && exit 1)
+          echo "VAD assets OK ($(du -sh dist/vad | cut -f1) total)"
 
   docker:
     name: Docker build

@@ -11,6 +11,7 @@ import {
   float32ToWav,
   arrayBufferToBase64,
   stopTTS,
+  setActiveAudio,
   getActiveAudio,
 } from '../utils/audioUtils';
 
@@ -75,6 +76,10 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
     if (audioQueueRef.current.length === 0) {
       isPlayingRef.current = false;
       aiAudioEndTimeRef.current = Date.now();
+      // Clear the tracked audio element once the queue drains so that stopTTS()
+      // called at the top of startVoiceListening does not try to re-pause a
+      // long-since-finished element.
+      setActiveAudio(null);
       if (aiDoneRef.current) {
         aiDoneRef.current = false;
         setVoiceStatus('Ready');
@@ -92,12 +97,16 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
     const blob = audioQueueRef.current.shift();
     const url = URL.createObjectURL(blob);
     aiAudioStartTimeRef.current = Date.now();
-    stopTTS();
+    stopTTS();  // stop any previous element before creating a new one
 
     const audio = new Audio(url);
-    audio.onended = () => { URL.revokeObjectURL(url); playNextInQueue(); };
-    audio.onerror = () => { URL.revokeObjectURL(url); playNextInQueue(); };
-    audio.play().catch(() => { URL.revokeObjectURL(url); playNextInQueue(); });
+    // Register so stopTTS() / getActiveAudio() can reference this element.
+    // This allows startVoiceListening's stopTTS() call to actually stop
+    // in-flight queue audio when the user manually stops the voice session.
+    setActiveAudio(audio);
+    audio.onended = () => { URL.revokeObjectURL(url); setActiveAudio(null); playNextInQueue(); };
+    audio.onerror = () => { URL.revokeObjectURL(url); setActiveAudio(null); playNextInQueue(); };
+    audio.play().catch(() => { URL.revokeObjectURL(url); setActiveAudio(null); playNextInQueue(); });
   }, []);
 
   const queueAudioChunk = useCallback((arrayBuffer) => {
@@ -426,12 +435,38 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
             abandonSilero(`Silero produced no audio frames (AudioContext/worklet: ${ctxState || 'missing'})`);
           } else {
             reportVadMode('silero', { source: vadSourceRef.current });
+            // Explicitly pause before (re-)starting to guarantee the Silero
+            // internal state machine begins from a known "paused" state.
+            // On the first call, the VAD was never started so pause() is a safe
+            // no-op. On re-listen calls the VAD was paused by sendAudioToServer;
+            // the explicit call here is defensive against any other code path
+            // that might leave it in a half-started state.
+            try { vadRef.current.pause(); } catch { /* ok */ }
             vadRef.current.start();
             if (!frameWatchDoneRef.current) {
+              // First ever call: wait for the AudioWorklet to deliver its first
+              // frame so we know the pipeline is actually running before we
+              // declare Silero ready.
               frameWatchDoneRef.current = true;
               const gotFrames = await waitForVadFrames(vadRef.current);
               if (!gotFrames && voiceActiveRef.current) {
                 abandonSilero('Silero produced no audio frames (AudioContext/worklet)');
+              }
+            } else {
+              // Re-listen after AI responds: do a quick sanity check (300 ms)
+              // to catch AudioWorklets that died silently due to browser
+              // resource throttling.  If no frames arrive, fall back to energy
+              // VAD for this listen cycle and reset frameWatchDoneRef so the
+              // full check runs again on the next startVoiceListening call.
+              const prevFrames = vadRef.current._framesReceived || 0;
+              await new Promise((r) => setTimeout(r, 300));
+              if (
+                vadRef.current &&
+                vadRef.current._framesReceived === prevFrames &&
+                voiceActiveRef.current
+              ) {
+                frameWatchDoneRef.current = false;
+                abandonSilero('Silero worklet stopped delivering frames (throttled?)');
               }
             }
             if (vadReadyRef.current && vadRef.current && voiceActiveRef.current) {
@@ -542,6 +577,7 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
 
   return {
     voiceActive,
+    voiceActiveRef,
     voiceSpeaking,
     voiceProcessing,
     voiceTranscript,

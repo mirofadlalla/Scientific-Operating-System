@@ -114,7 +114,7 @@ export default function ChatPage() {
         // during the next answer.
         session.aiDoneRef.current = false;
         session.setVoiceStatus('Ready');
-        if (session.voiceActive && session.startVoiceListeningRef.current) {
+        if (session.voiceActiveRef?.current && session.startVoiceListeningRef.current) {
           session.startVoiceListeningRef.current();
         }
       }
