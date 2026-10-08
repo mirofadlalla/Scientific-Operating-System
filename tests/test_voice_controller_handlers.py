@@ -11,6 +11,9 @@ import base64
 import json
 import logging
 
+from fastapi import WebSocketDisconnect
+from starlette.websockets import WebSocketState
+
 from app.controllers import voice_controller as vc
 from app.services.voice_session import VoiceSession
 
@@ -91,6 +94,58 @@ def test_client_info_logs_which_vad_is_used(caplog):
     text = caplog.text
     assert "client VAD=SILERO" in text
     assert "client VAD=ENERGY-FALLBACK" in text and "failed to fetch" in text
+
+
+def test_client_info_sends_vad_status_ack():
+    async def run():
+        ws = FakeWS()
+        session = VoiceSession(ws, "t_vad_ack")
+        await vc._on_client_info(session, {"vad": "silero", "source": "local", "model": "v5"})
+        sent = [json.loads(m) for m in ws.sent]
+        assert sent == [{
+            "type": "vad_status",
+            "vad": "silero",
+            "ok": True,
+            "speaking": False,
+        }]
+
+    asyncio.run(run())
+
+
+class SequenceWS(FakeWS):
+    def __init__(self, frames):
+        super().__init__()
+        self._frames = list(frames)
+        self.client_state = WebSocketState.CONNECTED
+
+    async def accept(self):
+        pass
+
+    async def receive(self):
+        if not self._frames:
+            self.client_state = WebSocketState.DISCONNECTED
+            raise WebSocketDisconnect()
+        return self._frames.pop(0)
+
+
+def test_invalid_json_payload_does_not_crash_voice_loop(caplog, monkeypatch):
+    async def noop_heartbeat(session, interval=15.0):
+        return
+
+    monkeypatch.setattr(vc.voice_service, "heartbeat_loop", noop_heartbeat)
+
+    async def run():
+        ws = SequenceWS([
+            {"text": "not-json{"},
+            {"text": json.dumps({"type": "ping"})},
+        ])
+        await vc.handle_voice_channel(ws, "t_bad_json")
+        sent = [json.loads(m) for m in ws.sent]
+        assert any(m.get("type") == "pong" for m in sent)
+
+    with caplog.at_level(logging.WARNING, logger=vc.logger.name):
+        asyncio.run(run())
+    assert "invalid JSON" in caplog.text
 
 
 def test_audio_end_during_turn_does_not_cancel_the_answer():

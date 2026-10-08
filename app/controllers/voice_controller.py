@@ -18,6 +18,7 @@ Server → Client messages:
         {"type": "ai_start"} | {"type": "ai_token", "token": "...", "done": false}
         {"type": "ai_done"}  | {"type": "interrupted"}  | {"type": "pong"}
         {"type": "error", "message": "..."} | {"type": "status", "status": "..."}
+        {"type": "vad_status", "vad": "...", "ok": true, "speaking": false}
     Binary frames:
         Raw WAV audio bytes (one frame per TTS batch)
 
@@ -111,6 +112,25 @@ async def _on_audio_chunk(session: VoiceSession, msg: dict) -> None:
         return
 
     session.audio_chunks.append(chunk)
+    voice_log(
+        "audio_chunk_received",
+        session_id=session.session_id,
+        turn_id=session.turn_id,
+        audio_format=msg.get("format"),
+        client_vad=session.client_vad,
+        chunk_bytes=len(chunk),
+        buffered_chunks=len(session.audio_chunks),
+        msg_keys=sorted(msg.keys()),
+    )
+    logger.debug(
+        "[VOICE] session=%s audio_chunk format=%s client_vad=%s bytes=%s buffered=%s keys=%s",
+        session.session_id,
+        msg.get("format"),
+        session.client_vad,
+        len(chunk),
+        len(session.audio_chunks),
+        sorted(msg.keys()),
+    )
 
 
 async def _on_audio_end(session: VoiceSession, msg: dict) -> None:
@@ -158,6 +178,13 @@ async def _on_client_info(session: VoiceSession, msg: dict) -> None:
     else:
         logger.warning(f"[VOICE] session={session.session_id} client VAD=ENERGY-FALLBACK "
                        f"(Silero did not load) reason={msg.get('reason')}")
+    # speaking:false is metadata on the ack — not a speaking event for the UI.
+    await session.send_json({
+        "type": "vad_status",
+        "vad": vad,
+        "ok": True,
+        "speaking": False,
+    })
 
 
 async def _on_ping(session: VoiceSession, msg: dict) -> None:
@@ -204,7 +231,21 @@ async def handle_voice_channel(websocket: WebSocket, session_id: str) -> None:
                 # WebSocketDisconnect or close frame
                 raise WebSocketDisconnect()
 
-            msg = json.loads(raw) # تحويل سترينج الجيشون إلى dict
+            try:
+                msg = json.loads(raw)  # تحويل سترينج الجيشون إلى dict
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "[WS] Session %s dropped invalid JSON payload (%s): %r",
+                    session_id,
+                    exc,
+                    (raw[:200] if isinstance(raw, str) else raw),
+                )
+                continue
+
+            if not isinstance(msg, dict):
+                logger.warning("[WS] Session %s ignored non-object JSON payload", session_id)
+                continue
+
             handler = _HANDLERS.get(msg.get("type"))
             if handler:
                 await handler(session, msg)

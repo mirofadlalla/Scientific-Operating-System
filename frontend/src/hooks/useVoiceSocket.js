@@ -1,16 +1,25 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { WS_URL } from '../config';
 
+const MAX_QUEUED_FRAMES = 32;
+
 /**
  * Hook for managing full-duplex WebSocket connection to the voice channel.
  * Includes automated keepalive pings and tablet wake-up resync.
+ *
+ * Outbound JSON is queued while the socket is down so VAD events
+ * (client_info, audio_chunk, audio_end) are not silently dropped.
  */
-export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk }) {
+export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk, onOpen }) {
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const onMessageRef = useRef(onMessage);
   const onBinaryChunkRef = useRef(onBinaryChunk);
+  const onOpenRef = useRef(onOpen);
+  const outboundQueueRef = useRef([]);
+  const lastClientInfoRef = useRef(null);
+  const unmountedRef = useRef(false);
 
   useEffect(() => {
     onMessageRef.current = onMessage;
@@ -19,6 +28,17 @@ export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk }) {
   useEffect(() => {
     onBinaryChunkRef.current = onBinaryChunk;
   }, [onBinaryChunk]);
+
+  useEffect(() => {
+    onOpenRef.current = onOpen;
+  }, [onOpen]);
+
+  const flushQueue = useCallback((ws) => {
+    const q = outboundQueueRef.current;
+    while (q.length && ws.readyState === WebSocket.OPEN) {
+      ws.send(q.shift());
+    }
+  }, []);
 
   const connectWS = useCallback(() => {
     if (reconnectTimerRef.current) {
@@ -34,14 +54,21 @@ export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk }) {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log('[WS] Connected');
+      console.log('[WS] Connected', WS_URL);
       setWsConnected(true);
+      flushQueue(ws);
+      if (lastClientInfoRef.current && ws.readyState === WebSocket.OPEN) {
+        ws.send(lastClientInfoRef.current);
+      }
+      if (onOpenRef.current) onOpenRef.current();
     };
 
     ws.onclose = () => {
       console.log('[WS] Disconnected, will reconnect in 3s');
       setWsConnected(false);
-      reconnectTimerRef.current = setTimeout(connectWS, 3000);
+      if (!unmountedRef.current) {
+        reconnectTimerRef.current = setTimeout(connectWS, 3000);
+      }
     };
 
     ws.onerror = () => {
@@ -67,11 +94,13 @@ export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk }) {
         onMessageRef.current(msg);
       }
     };
-  }, [sessionId]);
+  }, [sessionId, flushQueue]);
 
   useEffect(() => {
+    unmountedRef.current = false;
     connectWS();
     return () => {
+      unmountedRef.current = true;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       if (wsRef.current) {
         try { wsRef.current.close(); } catch {}
@@ -104,11 +133,31 @@ export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk }) {
   }, []);
 
   const sendJson = useCallback((payload) => {
+    let data;
+    try {
+      data = JSON.stringify(payload);
+    } catch (err) {
+      console.error('[WS] Failed to serialize payload', payload?.type, err);
+      return false;
+    }
+
+    if (payload?.type === 'client_info') {
+      lastClientInfoRef.current = data;
+    }
+
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(payload));
+      wsRef.current.send(data);
       return true;
     }
-    return false;
+
+    // Never queue keepalive — it is meaningless after a reconnect.
+    if (payload?.type === 'ping') return false;
+
+    const q = outboundQueueRef.current;
+    q.push(data);
+    if (q.length > MAX_QUEUED_FRAMES) q.splice(0, q.length - MAX_QUEUED_FRAMES);
+    console.warn(`[WS] Queued ${payload?.type} (${q.length} pending) — socket not open`);
+    return true;
   }, []);
 
   return { wsConnected, sendJson, wsRef };

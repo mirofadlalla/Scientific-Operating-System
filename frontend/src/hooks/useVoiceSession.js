@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react';
 import {
   initializeSileroVAD,
   armMicVad,
+  waitForVadFrames,
   VAD_MODEL,
 } from '../services/vadService';
 import {
@@ -16,7 +17,7 @@ import {
 const FALLBACK_SILENCE_MS = 1200;
 const ALLOW_VOICE_BARGE_IN = false;
 
-export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt, onError }) {
+export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBargeInInterrupt, onError }) {
   const [voiceActive, setVoiceActive] = useState(false);
   const voiceActiveRef = useRef(false);
   const [voiceSpeaking, setVoiceSpeaking] = useState(false);
@@ -24,6 +25,7 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceStatus, setVoiceStatus] = useState('');
   const [waveHeights, setWaveHeights] = useState(Array(12).fill(4));
+  const [vadMode, setVadMode] = useState(null);
 
   // Audio queue & playback refs
   const audioQueueRef = useRef([]);
@@ -42,6 +44,9 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
   const vadSourceRef = useRef(null);
   const vadFailReasonRef = useRef('');
   const vadModeRef = useRef(null);
+  const lastVadDetailRef = useRef({});
+  const frameWatchDoneRef = useRef(false);
+  const pendingSendsRef = useRef(0);
   const bargeInTimerRef = useRef(null);
   const bargeInActiveRef = useRef(false);
 
@@ -104,9 +109,17 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
   }, [playNextInQueue]);
 
   const sendAudioToServer = useCallback((wavArrayBuffer, format = 'wav') => {
+    if (vadRef.current) {
+      try { vadRef.current.pause(); } catch { /* already paused */ }
+    }
     const b64 = arrayBufferToBase64(wavArrayBuffer);
-    sendJson({ type: 'audio_chunk', data: b64, format });
-    sendJson({ type: 'audio_end', format });
+    const chunkOk = sendJson({ type: 'audio_chunk', data: b64, format });
+    const endOk = sendJson({ type: 'audio_end', format });
+    if (!chunkOk || !endOk) {
+      console.error('[VAD] Failed to send utterance to backend (socket down)');
+    } else {
+      console.log(`[VAD] Sent ${format} utterance (${b64.length} b64 chars) → backend`);
+    }
     setVoiceSpeaking(false);
     setVoiceProcessing(true);
     setVoiceStatus('Transcribing speech…');
@@ -176,7 +189,15 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
               recordingActiveRef.current = false;
               const ext = mr._recExt || 'webm';
               mr.onstop = () => {
-                sendJson({ type: 'audio_end', format: ext });
+                const flushEnd = async () => {
+                  let spins = 0;
+                  while (pendingSendsRef.current > 0 && spins < 100) {
+                    await new Promise((r) => setTimeout(r, 20));
+                    spins += 1;
+                  }
+                  sendJson({ type: 'audio_end', format: ext });
+                };
+                flushEnd();
               };
               try { mr.stop(); } catch {}
               setVoiceSpeaking(false);
@@ -222,9 +243,11 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
   }, [sendJson, onBargeInInterrupt]);
 
   // Report VAD mode to server and console
-  const reportVadMode = useCallback((mode, detail = {}) => {
-    if (vadModeRef.current === mode) return;
+  const reportVadMode = useCallback((mode, detail = {}, force = false) => {
+    if (!force && vadModeRef.current === mode) return;
     vadModeRef.current = mode;
+    lastVadDetailRef.current = detail;
+    setVadMode(mode);
     if (mode === 'silero') {
       console.log(`%c[VAD] ACTIVE: Silero VAD (source=${detail.source}, model=${VAD_MODEL})`,
                   'color:#16a34a;font-weight:bold');
@@ -239,6 +262,11 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
       reason: detail.reason || null,
     });
   }, [sendJson]);
+
+  const resendVadMode = useCallback(() => {
+    if (!vadModeRef.current) return;
+    reportVadMode(vadModeRef.current, lastVadDetailRef.current, true);
+  }, [reportVadMode]);
 
   // Silero VAD initialization
   const initSileroVAD = useCallback((stream) => {
@@ -371,23 +399,52 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
 
       setVoiceActiveSync(true);
       setVoiceProcessing(false);
-      setVoiceStatus('Listening… (speak now)');
+      setVoiceStatus(wsConnected === false ? 'Connecting voice channel…' : 'Listening… (speak now)');
 
       cancelAnimationFrame(waveRafRef.current);
 
+      const abandonSilero = (reason) => {
+        console.warn(`[VAD] ${reason} — falling back to energy VAD`);
+        if (vadRef.current) {
+          try { vadRef.current.pause(); } catch { /* already paused */ }
+          try { vadRef.current.destroy(); } catch { /* already destroyed */ }
+          vadRef.current = null;
+        }
+        vadReadyRef.current = false;
+        vadFailedRef.current = true;
+        vadFailReasonRef.current = reason;
+      };
+
+      let useSilero = false;
       if (!vadFailedRef.current) {
         await initSileroVAD(micStreamRef.current);
 
         if (vadReadyRef.current && vadRef.current) {
-          reportVadMode('silero', { source: vadSourceRef.current });
-          await armMicVad(vadRef.current);
-          vadRef.current.start();
-          waveRafRef.current = requestAnimationFrame(animateWave);
-          return;
+          const running = await armMicVad(vadRef.current);
+          const ctxState = vadRef.current.audioContext?.state;
+          if (!running || ctxState === 'interrupted' || ctxState === 'suspended') {
+            abandonSilero(`Silero produced no audio frames (AudioContext/worklet: ${ctxState || 'missing'})`);
+          } else {
+            reportVadMode('silero', { source: vadSourceRef.current });
+            vadRef.current.start();
+            if (!frameWatchDoneRef.current) {
+              frameWatchDoneRef.current = true;
+              const gotFrames = await waitForVadFrames(vadRef.current);
+              if (!gotFrames && voiceActiveRef.current) {
+                abandonSilero('Silero produced no audio frames (AudioContext/worklet)');
+              }
+            }
+            if (vadReadyRef.current && vadRef.current && voiceActiveRef.current) {
+              useSilero = true;
+              waveRafRef.current = requestAnimationFrame(animateWave);
+            }
+          }
         }
       }
 
-      // Fallback
+      if (useSilero || !voiceActiveRef.current) return;
+
+      // Fallback — MediaRecorder does not need Silero's AudioContext.
       reportVadMode('energy', { reason: vadFailReasonRef.current || 'Silero VAD unavailable' });
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try { mediaRecorderRef.current.stop(); } catch {}
@@ -396,17 +453,26 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
       const mr = new MediaRecorder(micStreamRef.current, recMime ? { mimeType: recMime } : {});
       mediaRecorderRef.current = mr;
       mr._recExt = recExt;
+      pendingSendsRef.current = 0;
 
       mr.ondataavailable = (e) => {
         if (e.data.size === 0) return;
         if (mediaRecorderRef.current !== mr) return;
         if (isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current) return;
         const reader = new FileReader();
+        pendingSendsRef.current += 1;
         reader.onload = () => {
-          const b64 = reader.result?.split(',')[1];
-          if (b64) {
-            sendJson({ type: 'audio_chunk', data: b64, format: recExt });
+          try {
+            const b64 = reader.result?.split(',')[1];
+            if (b64) {
+              sendJson({ type: 'audio_chunk', data: b64, format: recExt });
+            }
+          } finally {
+            pendingSendsRef.current = Math.max(0, pendingSendsRef.current - 1);
           }
+        };
+        reader.onerror = () => {
+          pendingSendsRef.current = Math.max(0, pendingSendsRef.current - 1);
         };
         reader.readAsDataURL(e.data);
       };
@@ -418,7 +484,7 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
       recordingActiveRef.current = false;
       if (onError) onError(err);
     }
-  }, [animateWave, fallbackVADLoop, initSileroVAD, reportVadMode, sendJson, onError]);
+  }, [animateWave, fallbackVADLoop, initSileroVAD, reportVadMode, sendJson, wsConnected, onError]);
 
   startVoiceListeningRef.current = startVoiceListening;
 
@@ -459,6 +525,10 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
     vadFailReasonRef.current = '';
     vadSourceRef.current = null;
     vadModeRef.current = null;
+    lastVadDetailRef.current = {};
+    frameWatchDoneRef.current = false;
+    pendingSendsRef.current = 0;
+    setVadMode(null);
 
     setVoiceSpeaking(false);
     setVoiceProcessing(false);
@@ -481,8 +551,10 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
     setVoiceProcessing,
     setVoiceTranscript,
     setVoiceStatus,
+    vadMode,
     startVoiceListening,
     stopVoice,
+    resendVadMode,
     queueAudioChunk,
     aiStreamingRef,
     audioQueueRef,

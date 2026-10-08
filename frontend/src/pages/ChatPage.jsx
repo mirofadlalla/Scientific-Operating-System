@@ -3,6 +3,7 @@ import Message from '../components/Message';
 import VoiceOverlay from '../components/VoiceOverlay';
 import { useVoiceSocket } from '../hooks/useVoiceSocket';
 import { useVoiceSession } from '../hooks/useVoiceSession';
+import { preloadVadScripts } from '../services/vadService';
 import { streamOrchestrate } from '../services/api';
 import { stopTTS } from '../utils/audioUtils';
 
@@ -61,8 +62,15 @@ export default function ChatPage() {
     if (!session) return;
 
     if (msg.type === 'vad_status') {
+      // client_info ack — includes speaking:false / ok:true. Do not treat as a
+      // speaking event and do not overwrite the overlay status text.
+      console.log('[VAD] backend ack', msg.vad, 'ok=', msg.ok);
+      return;
+    }
+    if (typeof msg.speaking === 'boolean') {
       session.setVoiceSpeaking(msg.speaking);
-    } else if (msg.type === 'status') {
+    }
+    if (msg.type === 'status') {
       session.setVoiceStatus(msg.status);
       if (msg.status.includes('Transcribing')) session.setVoiceProcessing(true);
       if (msg.status === 'No speech detected') {
@@ -137,20 +145,32 @@ export default function ChatPage() {
     }
   }, []);
 
+  const handleSocketOpen = useCallback(() => {
+    voiceSessionRef.current?.resendVadMode?.();
+  }, []);
+
   const voiceSocket = useVoiceSocket({
     sessionId: SESSION_ID,
     onMessage: handleSocketMessage,
     onBinaryChunk: handleBinaryChunk,
+    onOpen: handleSocketOpen,
   });
 
   const voiceSession = useVoiceSession({
     sendJson: voiceSocket.sendJson,
+    wsConnected: voiceSocket.wsConnected,
     onError: (err) => addMsg('ai', `⚠️ Microphone error: ${err.message}`, 'error'),
   });
 
   useEffect(() => {
     voiceSessionRef.current = voiceSession;
   });
+
+  useEffect(() => {
+    preloadVadScripts().then((src) => {
+      if (src) console.log(`[VAD] scripts preloaded from ${src}`);
+    });
+  }, []);
 
   // Text submit handler
   const submitText = async () => {
