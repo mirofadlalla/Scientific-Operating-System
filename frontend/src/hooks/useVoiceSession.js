@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import {
   initializeSileroVAD,
+  armMicVad,
   VAD_MODEL,
 } from '../services/vadService';
 import {
@@ -13,7 +14,6 @@ import {
 } from '../utils/audioUtils';
 
 const FALLBACK_SILENCE_MS = 1200;
-const ECHO_GUARD_MS = 1500;
 const ALLOW_VOICE_BARGE_IN = false;
 
 export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt, onError }) {
@@ -50,6 +50,7 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
   const analyserRef = useRef(null);
   const waveRafRef = useRef(null);
   const micStreamRef = useRef(null);
+  const analyserStreamRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const speechDetectedRef = useRef(false);
   const speechStartRef = useRef(null);
@@ -80,6 +81,9 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
     }
     isPlayingRef.current = true;
     setVoiceStatus('Speaking…');
+    if (vadRef.current) {
+      try { vadRef.current.pause(); } catch { /* already paused */ }
+    }
     const blob = audioQueueRef.current.shift();
     const url = URL.createObjectURL(blob);
     aiAudioStartTimeRef.current = Date.now();
@@ -244,15 +248,16 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
     vadInitPromiseRef.current = initializeSileroVAD(stream, {
       onSpeechStart: () => {
         const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
-        const echoGuardActive = isAIActive || (Date.now() - aiAudioEndTimeRef.current) < ECHO_GUARD_MS;
-        echoSpeechRef.current = echoGuardActive && !ALLOW_VOICE_BARGE_IN;
-
-        if (echoSpeechRef.current) {
-          // Almost certainly the AI's own voice leaking into the mic: do not touch the
-          // UI (no "Listening (speaking)" flicker) and never start a barge-in timer.
+        // Only treat speech as echo while the AI is actually outputting audio.
+        // A post-playback tail here is wrong: startVoiceListening() runs as soon as
+        // TTS drains, so the user's first reply always began inside ECHO_GUARD_MS
+        // and onSpeechEnd dropped the whole utterance.
+        if (isAIActive && !ALLOW_VOICE_BARGE_IN) {
+          echoSpeechRef.current = true;
           console.log('[Silero VAD] onSpeechStart ignored — AI busy / echo-guard active');
           return;
         }
+        echoSpeechRef.current = false;
 
         setVoiceSpeaking(true);
         setVoiceStatus('Listening (speaking)…');
@@ -301,18 +306,10 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
         }
         bargeInActiveRef.current = false;
 
-        let wavBuffer;
-        try {
-          const blob = window.vad.utils.encodeWAV(audioFloat32);
-          const reader = new FileReader();
-          reader.onload = () => { sendAudioToServer(reader.result, 'wav'); };
-          reader.readAsArrayBuffer(blob);
-          return;
-        } catch (e) {
-          console.warn('[Silero VAD] utils.encodeWAV failed, using manual encoder:', e);
-          wavBuffer = float32ToWav(audioFloat32, 16000);
-        }
-        sendAudioToServer(wavBuffer, 'wav');
+        // encodeWAV() returns an ArrayBuffer (IEEE float WAV by default), not a Blob.
+        // FileReader.readAsArrayBuffer() requires a Blob, so that path always threw
+        // and we already fell back — send 16-bit PCM directly.
+        sendAudioToServer(float32ToWav(audioFloat32, 16000), 'wav');
       },
     })
     .then(({ vad, source }) => {
@@ -340,6 +337,8 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
     silenceStartRef.current = null;
     bargeInTimerRef.current = null;
     bargeInActiveRef.current = false;
+    echoSpeechRef.current = false;
+    aiAudioEndTimeRef.current = 0;
     isSpeakingRef.current = false;
     recordingActiveRef.current = true;
 
@@ -361,7 +360,10 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
         await audioContextRef.current.resume();
       }
       if (!analyserRef.current) {
-        const src = audioContextRef.current.createMediaStreamSource(micStreamRef.current);
+        // Clone so the waveform analyser does not share a MediaStreamAudioSource
+        // with MicVAD's own AudioContext (some browsers starve the second reader).
+        analyserStreamRef.current = micStreamRef.current.clone();
+        const src = audioContextRef.current.createMediaStreamSource(analyserStreamRef.current);
         analyserRef.current = audioContextRef.current.createAnalyser();
         analyserRef.current.fftSize = 256;
         src.connect(analyserRef.current);
@@ -378,6 +380,7 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
 
         if (vadReadyRef.current && vadRef.current) {
           reportVadMode('silero', { source: vadSourceRef.current });
+          await armMicVad(vadRef.current);
           vadRef.current.start();
           waveRafRef.current = requestAnimationFrame(animateWave);
           return;
@@ -432,6 +435,10 @@ export function useVoiceSession({ sendJson, onSpeechRecorded, onBargeInInterrupt
     const mr = mediaRecorderRef.current;
     if (mr && mr.state !== 'inactive') { try { mr.stop(); } catch {} }
 
+    if (analyserStreamRef.current) {
+      analyserStreamRef.current.getTracks().forEach(t => t.stop());
+      analyserStreamRef.current = null;
+    }
     if (micStreamRef.current) {
       micStreamRef.current.getTracks().forEach(t => t.stop());
       micStreamRef.current = null;

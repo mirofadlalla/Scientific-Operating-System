@@ -74,12 +74,22 @@ export async function initializeSileroVAD(stream, callbacks) {
         model: VAD_MODEL,
         baseAssetPath:    src.assetBase,
         onnxWASMBasePath: src.wasmBase,
+        // Without COOP/COEP, onnxruntime's default thread count fails to allocate
+        // the Silero session and MicVAD.new throws (or hangs until our timeout).
+        ortConfig: (ort) => {
+          try {
+            if (typeof crossOriginIsolated === 'undefined' || !crossOriginIsolated) {
+              ort.env.wasm.numThreads = 1;
+            }
+          } catch { /* keep library defaults */ }
+        },
         onSpeechStart: callbacks.onSpeechStart,
         onVADMisfire:  callbacks.onVADMisfire,
         onSpeechEnd:   callbacks.onSpeechEnd,
       });
 
       const myvad = await withTimeout(createVad, VAD_INIT_TIMEOUT_MS, 'MicVAD.new');
+      await armMicVad(myvad);
       console.log(`[VAD] Silero VAD initialised from ${src.name}`);
       return { vad: myvad, source: src.name };
     } catch (err) {
@@ -91,4 +101,38 @@ export async function initializeSileroVAD(stream, callbacks) {
 
   const failReason = failures.join(' | ');
   throw new Error(`All Silero sources failed: ${failReason}`);
+}
+
+/**
+ * MicVAD.new() runs after await getUserMedia(), so its AudioContext is often
+ * created outside the user-gesture window and stays "suspended". start() only
+ * flips the frame-processor flag — it does not resume the context, so the
+ * worklet never sees frames and onSpeechStart never fires.
+ *
+ * Chrome also skips AudioWorkletNodes that are not in the destination graph;
+ * vad-web 0.0.22's worklet path never connects to destination (only the
+ * ScriptProcessor fallback does).
+ */
+export async function armMicVad(myvad) {
+  if (!myvad) return;
+  const ctx = myvad.audioContext;
+  if (ctx && ctx.state === 'suspended') {
+    try {
+      await ctx.resume();
+    } catch (err) {
+      console.warn('[VAD] AudioContext.resume() failed', err);
+    }
+  }
+  const node = myvad.audioNodeVAD?.audioNode;
+  if (ctx && node && !myvad._destinationArmed) {
+    try {
+      const mute = ctx.createGain();
+      mute.gain.value = 0;
+      node.connect(mute);
+      mute.connect(ctx.destination);
+      myvad._destinationArmed = true;
+    } catch (err) {
+      console.warn('[VAD] worklet destination connect failed', err);
+    }
+  }
 }
