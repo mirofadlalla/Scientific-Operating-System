@@ -87,3 +87,19 @@ def test_recent_requests_entries_have_fields_monitor_page_reads():
     entry = monitoring.get_recent_requests(1)[-1]
     for key in ("ts", "endpoint", "method", "status", "latency_ms"):
         assert key in entry, key
+def test_voice_barge_in_frontend_logic():
+    hook_file = FRONTEND_SRC / "hooks" / "useVoiceSession.js"
+    assert hook_file.exists(), "useVoiceSession.js not found"
+    content = hook_file.read_text(encoding="utf-8")
+    assert "const ALLOW_VOICE_BARGE_IN = true;" in content, "ALLOW_VOICE_BARGE_IN must be true for barge-in to work"
+    
+    # Ensure playNextInQueue does not pause VAD
+    play_next_idx = content.find("const playNextInQueue = useCallback(")
+    send_audio_idx = content.find("const sendAudioToServer = useCallback(")
+    assert play_next_idx > 0 and send_audio_idx > 0
+    
+    play_next_body = content[play_next_idx:send_audio_idx]
+    assert "vadRef.current.pause()" not in play_next_body, "VAD must not be paused in playNextInQueue"
+    
+    send_audio_body = content[send_audio_idx:content.find("animateWave", send_audio_idx)]
+    assert "vadRef.current.pause()" not in send_audio_body, "VAD must not be paused in sendAudioToServer"

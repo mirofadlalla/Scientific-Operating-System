@@ -16,7 +16,7 @@ import {
 } from '../utils/audioUtils';
 
 const FALLBACK_SILENCE_MS = 1200;
-const ALLOW_VOICE_BARGE_IN = false;
+const ALLOW_VOICE_BARGE_IN = true;
 
 // Energy-VAD tuning values (kept here so the debug log prints what the loop uses).
 const ENERGY_SPEECH_THRESHOLD = 28.0;
@@ -55,7 +55,12 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
   const [voiceActive, setVoiceActive] = useState(false);
   const voiceActiveRef = useRef(false);
   const [voiceSpeaking, setVoiceSpeaking] = useState(false);
-  const [voiceProcessing, setVoiceProcessing] = useState(false);
+  const [voiceProcessing, _setVoiceProcessing] = useState(false);
+  const voiceProcessingRef = useRef(false);
+  const setVoiceProcessing = useCallback((val) => {
+    voiceProcessingRef.current = val;
+    _setVoiceProcessing(val);
+  }, []);
   const [voiceTranscript, setVoiceTranscript] = useState('');
   const [voiceStatus, setVoiceStatus] = useState('');
   const [waveHeights, setWaveHeights] = useState(Array(12).fill(4));
@@ -126,7 +131,7 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
     isPlayingRef.current = true;
     setVoiceStatus('Speaking…');
     if (vadRef.current) {
-      try { vadRef.current.pause(); } catch { /* already paused */ }
+      /* VAD pause removed to allow barge-in */
     }
     const blob = audioQueueRef.current.shift();
     const url = URL.createObjectURL(blob);
@@ -162,7 +167,7 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
 
   const sendAudioToServer = useCallback((wavArrayBuffer, format = 'wav') => {
     if (vadRef.current) {
-      try { vadRef.current.pause(); } catch { /* already paused */ }
+      /* VAD pause removed to allow barge-in */
     }
     const b64 = arrayBufferToBase64(wavArrayBuffer);
     const chunkOk = sendJson({ type: 'audio_chunk', data: b64, format });
@@ -303,7 +308,7 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
         }
       }
     } else {
-      const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
+      const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current || voiceProcessingRef.current;
       // The energy detector cannot tell the user's voice from the AI's own voice
       // coming out of the speakers, so voice barge-in is only evaluated when it is
       // explicitly enabled. Without this gate, speaker echo above the threshold
@@ -369,7 +374,7 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
 
     vadInitPromiseRef.current = initializeSileroVAD(stream, {
       onSpeechStart: () => {
-        const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current;
+        const isAIActive = isPlayingRef.current || audioQueueRef.current.length > 0 || aiStreamingRef.current || voiceProcessingRef.current;
         // Only treat speech as echo while the AI is actually outputting audio.
         // A post-playback tail here is wrong: startVoiceListening() runs as soon as
         // TTS drains, so the user's first reply always began inside ECHO_GUARD_MS
@@ -501,7 +506,7 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
       const abandonSilero = (reason) => {
         console.warn(`[VAD] ${reason} — falling back to energy VAD`);
         if (vadRef.current) {
-          try { vadRef.current.pause(); } catch { /* already paused */ }
+          /* VAD pause removed to allow barge-in */
           try { vadRef.current.destroy(); } catch { /* already destroyed */ }
           vadRef.current = null;
         }
@@ -685,3 +690,5 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
     startVoiceListeningRef,
   };
 }
+
+
