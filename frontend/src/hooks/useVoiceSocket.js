@@ -45,8 +45,12 @@ export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk, onOpen }) 
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    if (wsRef.current) {
-      try { wsRef.current.close(); } catch {}
+    const old = wsRef.current;
+    if (old) {
+      // Detach handlers first: a late onclose from the stale socket must not
+      // schedule a reconnect that kills the healthy replacement.
+      old.onopen = old.onclose = old.onerror = old.onmessage = null;
+      try { old.close(); } catch {}
     }
 
     const ws = new WebSocket(`${WS_URL}?session_id=${sessionId}`);
@@ -64,6 +68,7 @@ export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk, onOpen }) 
     };
 
     ws.onclose = () => {
+      if (wsRef.current !== ws) return; // stale socket
       console.log('[WS] Disconnected, will reconnect in 3s');
       setWsConnected(false);
       if (!unmountedRef.current) {
@@ -72,6 +77,7 @@ export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk, onOpen }) 
     };
 
     ws.onerror = () => {
+      if (wsRef.current !== ws) return;
       setWsConnected(false);
     };
 
@@ -102,8 +108,10 @@ export function useVoiceSocket({ sessionId, onMessage, onBinaryChunk, onOpen }) 
     return () => {
       unmountedRef.current = true;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-      if (wsRef.current) {
-        try { wsRef.current.close(); } catch {}
+      const cur = wsRef.current;
+      if (cur) {
+        cur.onopen = cur.onclose = cur.onerror = cur.onmessage = null;
+        try { cur.close(); } catch {}
       }
     };
   }, [connectWS]);

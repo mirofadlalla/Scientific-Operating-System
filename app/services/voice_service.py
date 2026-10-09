@@ -92,6 +92,27 @@ async def heartbeat_loop(session: VoiceSession, interval: float = 15.0) -> None:
 
 
 async def process_turn(session: VoiceSession, audio_format: str) -> None:
+    """Run one voice turn and GUARANTEE the client is told it ended.
+
+    Any unexpected exception is logged and reported as ``error`` followed by
+    ``ai_done``. Without the ``ai_done`` the browser stays on "Processing
+    response…" forever and never re-arms its (paused) VAD, so the mic goes dead.
+
+    ``asyncio.CancelledError`` is deliberately NOT handled here: cancellation is
+    how interrupt / disconnect stop a turn, and it must propagate untouched.
+    """
+    try:
+        await _run_turn(session, audio_format)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — last line of defence for the turn
+        logger.exception("[VOICE] turn %s failed unexpectedly", session.turn_id)
+        session.ai_streaming = False
+        await session.send_json({"type": "error", "message": f"Voice turn failed: {exc}"})
+        await session.send_json({"type": "ai_done"})
+
+
+async def _run_turn(session: VoiceSession, audio_format: str) -> None:
     """
     Full voice turn: STT → orchestrate → LLM stream → TTS → send audio.
 
@@ -126,6 +147,9 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
         return
     except Exception as exc:
         await session.send_json({"type": "error", "message": f"Transcription failed: {exc}"})
+        # Same dead-mic hazard as an unexpected failure: the client paused its VAD
+        # when it sent the utterance and only re-arms it on "ai_done".
+        await session.send_json({"type": "ai_done"})
         return
 
     stt_ms = round((time.time() - stt_start) * 1000, 1)
@@ -276,11 +300,21 @@ async def process_turn(session: VoiceSession, audio_format: str) -> None:
         await _tts_queue.put(None)
 
     # ── Run both concurrently ─────────────────────────────────────────────────
+    producer = asyncio.ensure_future(_llm_producer())
+    worker = asyncio.ensure_future(_tts_worker())
     try:
-        await asyncio.gather(_llm_producer(), _tts_worker())
+        await asyncio.gather(producer, worker)
     except asyncio.CancelledError:
         voice_log("turn_cancelled_during_pipeline", turn_id=turn_id)
         raise
+    finally:
+        # gather() does not cancel the other awaitable when one raises (or when we
+        # are cancelled). A surviving producer would block forever on the bounded
+        # TTS queue. Cancel and reap both so nothing outlives the turn.
+        for t in (producer, worker):
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(producer, worker, return_exceptions=True)
 
     llm_ms  = round((time.time() - llm_start)  * 1000, 1)
     tts_ms  = round((time.time() - tts_start)   * 1000, 1)

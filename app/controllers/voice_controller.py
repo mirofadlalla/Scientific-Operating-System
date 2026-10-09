@@ -155,7 +155,9 @@ async def _on_audio_end(session: VoiceSession, msg: dict) -> None:
     audio_format = msg.get("format", "webm")
     turn_id = session.new_turn()
     voice_log("audio_end_received", session_id=session.session_id,
-              turn_id=turn_id, chunk_count=len(session.audio_chunks))
+              turn_id=turn_id, chunk_count=len(session.audio_chunks),
+              audio_bytes=session.audio_bytes, audio_format=audio_format,
+              client_vad=session.client_vad)
 
     # Background task keeps the receive loop responsive to interrupt/ping/new audio.
     session.current_task = asyncio.create_task(voice_service.process_turn(session, audio_format))
@@ -264,5 +266,9 @@ async def handle_voice_channel(websocket: WebSocket, session_id: str) -> None:
             await heartbeat_task
         except (asyncio.CancelledError, Exception):
             pass
-        state.active_voice_sessions.pop(session_id, None)
+        # Only remove OUR entry. A reconnect reuses the same session_id, and this
+        # (older) connection's cleanup can run after the new one registered; an
+        # unconditional pop() would delete the live session.
+        if state.active_voice_sessions.get(session_id) is session:
+            state.active_voice_sessions.pop(session_id, None)
         logger.info(f"[WS] Session cleaned up: {session_id}")

@@ -11,3 +11,14 @@ export const API_BASE = `${BACKEND_URL}/api/v1`;
 
 // WebSocket voice channel (https -> wss, http -> ws)
 export const WS_URL = `${BACKEND_URL.replace(/^http/, "ws")}/api/v1/ws/voice`;
+
+// Diagnostics: make it obvious which backend a build is talking to. A local dev
+// server with VITE_BACKEND_URL unset silently targets the deployed HF Space.
+{
+  const fromEnv = Boolean(import.meta.env.VITE_BACKEND_URL);
+  const onLocalhost = typeof location !== "undefined" && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  console.info(`[config] BACKEND_URL=${BACKEND_URL} (${fromEnv ? "from VITE_BACKEND_URL" : "DEFAULT: deployed HF Space"})`);
+  if (!fromEnv && onLocalhost) {
+    console.warn("[config] Running on localhost but VITE_BACKEND_URL is unset — API and voice WebSocket go to the deployed HF Space, NOT your local backend.");
+  }
+}

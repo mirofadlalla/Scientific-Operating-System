@@ -35,7 +35,14 @@ def align_container_header(audio: bytes, audio_format: str) -> bytes:
     """Strip stray leading bytes so the container starts at its magic header.
 
     Prevents 400 invalid media file when cluster bytes were prepended.
+
+    A payload that already begins with a recognised container header is returned
+    untouched. Searching for the WebM EBML magic *inside* a WAV/OGG/MP4/etc. body
+    could otherwise match 4 coincidental sample bytes and slice the file apart.
     """
+    if detect_format(audio):
+        return audio
+
     ebml_pos = audio.find(_EBML)
     if ebml_pos > 0:
         logger.info("[STT] Slicing %d stray leading bytes to align WebM EBML header", ebml_pos)

@@ -18,6 +18,39 @@ import {
 const FALLBACK_SILENCE_MS = 1200;
 const ALLOW_VOICE_BARGE_IN = false;
 
+// Energy-VAD tuning values (kept here so the debug log prints what the loop uses).
+const ENERGY_SPEECH_THRESHOLD = 28.0;
+const ENERGY_MIN_SPEECH_MS = 500;
+// If "speech" never drops below the threshold for this long, the threshold is
+// almost certainly below the room's noise floor (audio_end would never be sent).
+const ENERGY_STUCK_WARN_MS = 8000;
+const ENERGY_DEBUG_LOG_EVERY_MS = 500;
+
+// TEMPORARY DEBUG: enable with  localStorage.setItem('voiceDebug','1')  then reload
+// (or build with VITE_VOICE_DEBUG=true). Read per call so it can be toggled live.
+function isVoiceDebug() {
+  try {
+    return import.meta.env.VITE_VOICE_DEBUG === 'true' || localStorage.getItem('voiceDebug') === '1';
+  } catch {
+    return false;
+  }
+}
+
+function queueLeft(ref) {
+  return ref.current.length;
+}
+
+function newEnergyStats() {
+  return { min: Infinity, max: 0, sum: 0, n: 0, lastLog: 0, startedAt: Date.now(),
+           speechAt: null, stuckWarned: false };
+}
+
+function describeEnergyStats(st) {
+  const avg = st.n ? (st.sum / st.n).toFixed(1) : '-';
+  const min = st.n ? st.min.toFixed(1) : '-';
+  return `min=${min} avg=${avg} max=${st.max.toFixed(1)} frames=${st.n}`;
+}
+
 export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBargeInInterrupt, onError }) {
   const [voiceActive, setVoiceActive] = useState(false);
   const voiceActiveRef = useRef(false);
@@ -63,6 +96,7 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
   const silenceStartRef = useRef(null);
   const isSpeakingRef = useRef(false);
   const recordingActiveRef = useRef(false);
+  const energyStatsRef = useRef(newEnergyStats());
 
   const startVoiceListeningRef = useRef(null);
 
@@ -105,8 +139,17 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
     // in-flight queue audio when the user manually stops the voice session.
     setActiveAudio(audio);
     audio.onended = () => { URL.revokeObjectURL(url); setActiveAudio(null); playNextInQueue(); };
-    audio.onerror = () => { URL.revokeObjectURL(url); setActiveAudio(null); playNextInQueue(); };
-    audio.play().catch(() => { URL.revokeObjectURL(url); setActiveAudio(null); playNextInQueue(); });
+    audio.onerror = () => {
+      console.warn(`[Audio] element error (code=${audio.error?.code}, ${audio.error?.message || 'no message'}) ` +
+                   `— skipping chunk (${blob.size} bytes, ${queueLeft(audioQueueRef)} still queued)`);
+      URL.revokeObjectURL(url); setActiveAudio(null); playNextInQueue();
+    };
+    audio.play().catch((err) => {
+      // NotAllowedError = browser autoplay policy; NotSupportedError = undecodable blob.
+      console.warn(`[Audio] play() rejected: ${err?.name}: ${err?.message} ` +
+                   `— skipping chunk (${blob.size} bytes, ${queueLeft(audioQueueRef)} still queued)`);
+      URL.revokeObjectURL(url); setActiveAudio(null); playNextInQueue();
+    });
   }, []);
 
   const queueAudioChunk = useCallback((arrayBuffer) => {
@@ -168,13 +211,46 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
     const { speechRms } = computeAudioMetrics(data);
 
     if (recordingActiveRef.current) {
-      const SPEECH_THRESHOLD = 28.0;
-      const MIN_SPEECH_MS = 500;
+      const SPEECH_THRESHOLD = ENERGY_SPEECH_THRESHOLD;
+      const MIN_SPEECH_MS = ENERGY_MIN_SPEECH_MS;
+
+      // ── diagnostics: rolling rms stats for this listen cycle ──
+      const st = energyStatsRef.current;
+      const now = Date.now();
+      st.n += 1; st.sum += speechRms;
+      if (speechRms < st.min) st.min = speechRms;
+      if (speechRms > st.max) st.max = speechRms;
+      if (isVoiceDebug() && now - st.lastLog >= ENERGY_DEBUG_LOG_EVERY_MS) {
+        st.lastLog = now;
+        const silenceFor = silenceStartRef.current ? now - silenceStartRef.current : 0;
+        console.log(
+          `[VAD-energy] rms=${speechRms.toFixed(1)} thr=${SPEECH_THRESHOLD} ` +
+          `speechDetected=${speechDetectedRef.current} silenceMs=${silenceFor}/${FALLBACK_SILENCE_MS} ` +
+          `| ${describeEnergyStats(st)}`
+        );
+      }
 
       if (speechRms > SPEECH_THRESHOLD) {
         if (speechStartRef.current === null) speechStartRef.current = Date.now();
         if (Date.now() - speechStartRef.current >= MIN_SPEECH_MS) {
+          if (!speechDetectedRef.current) {
+            st.speechAt = now;
+            if (isVoiceDebug()) {
+              console.log(`[VAD-energy] speech DETECTED after ${now - st.startedAt}ms of listening ` +
+                            `(rms=${speechRms.toFixed(1)} > ${SPEECH_THRESHOLD})`);
+            }
+          }
           speechDetectedRef.current = true;
+          // speechStartRef is reset whenever rms dips to/below the threshold, so this
+          // measures CONTINUOUS time above it (a long but natural utterance has dips).
+          if (!st.stuckWarned && now - speechStartRef.current > ENERGY_STUCK_WARN_MS) {
+            st.stuckWarned = true;
+            console.warn(
+              `[VAD-energy] rms stayed above ${SPEECH_THRESHOLD} continuously for ` +
+              `${ENERGY_STUCK_WARN_MS / 1000}s, so the silence timer never starts and audio_end is never sent. ` +
+              `The threshold is probably below this mic's noise floor. ${describeEnergyStats(st)}`
+            );
+          }
           if (!isSpeakingRef.current) {
             isSpeakingRef.current = true;
             setVoiceSpeaking(true);
@@ -197,6 +273,11 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
             if (mr && mr.state !== 'inactive') {
               recordingActiveRef.current = false;
               const ext = mr._recExt || 'webm';
+              if (isVoiceDebug()) {
+                console.log(`[VAD-energy] ${FALLBACK_SILENCE_MS}ms silence reached → stopping recorder ` +
+                              `(listened ${Date.now() - energyStatsRef.current.startedAt}ms, ` +
+                              `${describeEnergyStats(energyStatsRef.current)})`);
+              }
               mr.onstop = () => {
                 const flushEnd = async () => {
                   let spins = 0;
@@ -204,7 +285,11 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
                     await new Promise((r) => setTimeout(r, 20));
                     spins += 1;
                   }
-                  sendJson({ type: 'audio_end', format: ext });
+                  const sent = sendJson({ type: 'audio_end', format: ext });
+                  if (isVoiceDebug() || !sent || spins >= 100) {
+                    console.log(`[VAD-energy] audio_end sent=${sent} format=${ext} ` +
+                                `flushWait=${spins * 20}ms${spins >= 100 ? ' (TIMED OUT, chunks may be missing)' : ''}`);
+                  }
                 };
                 flushEnd();
               };
@@ -378,6 +463,7 @@ export function useVoiceSession({ sendJson, wsConnected, onSpeechRecorded, onBar
     aiAudioEndTimeRef.current = 0;
     isSpeakingRef.current = false;
     recordingActiveRef.current = true;
+    energyStatsRef.current = newEnergyStats();
 
     try {
       if (!micStreamRef.current || !micStreamRef.current.active) {
