@@ -36,6 +36,7 @@ export default function Message({ role, text, variant, streaming, thoughts }) {
                 <img
                   src={imgMatch[2]}
                   alt={imgMatch[1]}
+                  crossOrigin="anonymous"
                   onError={(e) => { e.target.style.display = 'none'; }}
                 />
               </div>
